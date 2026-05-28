@@ -1,0 +1,170 @@
+{
+  "name": "workflow_demo",
+  "description": "Creates markdown files step_1.md..step_10.md with step number and current date/time; can terminate early when end_id matches the current step id; always writes end.md at the end.",
+  "flow": {
+    "start": "start",
+    "steps": {
+      "start": {
+        "type": "start",
+        "next": "step_1"
+      },
+      "step_1": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_1.md in the current directory containing the current step number and current date and time, e.g., with content: Step 1 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_1'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_1'",
+            "next": "step_2"
+          }
+        ]
+      },
+      "step_2": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_2.md in the current directory containing the current step number and current date and time, e.g., with content: Step 2 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_2'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_2'",
+            "next": "step_3"
+          }
+        ]
+      },
+      "step_3": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_3.md in the current directory containing the current step number and current date and time, e.g., with content: Step 3 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_3'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_3'",
+            "next": "step_4"
+          }
+        ]
+      },
+      "step_4": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_4.md in the current directory containing the current step number and current date and time, e.g., with content: Step 4 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_4'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_4'",
+            "next": "step_5"
+          }
+        ]
+      },
+      "step_5": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_5.md in the current directory containing the current step number and current date and time, e.g., with content: Step 5 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_5'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_5'",
+            "next": "step_6"
+          }
+        ]
+      },
+      "step_6": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_6.md in the current directory containing the current step number and current date and time, e.g., with content: Step 6 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_6'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_6'",
+            "next": "step_7"
+          }
+        ]
+      },
+      "step_7": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_7.md in the current directory containing the current step number and current date and time, e.g., with content: Step 7 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_7'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_7'",
+            "next": "step_8"
+          }
+        ]
+      },
+      "step_8": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_8.md in the current directory containing the current step number and current date and time, e.g., with content: Step 8 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_8'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_8'",
+            "next": "step_9"
+          }
+        ]
+      },
+      "step_9": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_9.md in the current directory containing the current step number and current date and time, e.g., with content: Step 9 — <current date and time>."
+        },
+        "conditions": [
+          {
+            "condition": "end_id equals 'step_9'",
+            "next": "end"
+          },
+          {
+            "condition": "end_id does not equal 'step_9'",
+            "next": "step_10"
+          }
+        ]
+      },
+      "step_10": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named step_10.md in the current directory containing the current step number and current date and time, e.g., with content: Step 10 — <current date and time>."
+        },
+        "next": "end"
+      },
+      "end": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Create a markdown file named end.md in the current directory containing exactly: END."
+        }
+      }
+    }
+  }
+}

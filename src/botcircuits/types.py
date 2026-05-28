@@ -1,0 +1,80 @@
+"""Shared protocol types used across providers, the agent loop, the CLI
+renderer, and the gateway SSE serializer.
+
+These dataclasses carry no behavior — keep them that way. Anything with
+logic belongs in the module that owns the responsibility.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal, Union
+
+
+# ---------------------------------------------------------------------------
+# Core message / tool-call / provider-response shapes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ToolCall:
+    """The model's request to invoke a tool."""
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class LLMResponse:
+    """One provider response, normalized across vendors."""
+    text: str
+    tool_calls: list[ToolCall]
+    stop_reason: Literal["end_turn", "tool_use", "max_tokens", "other"]
+    raw: Any  # provider-native response, useful for debugging or token counting
+
+
+@dataclass
+class Message:
+    """One conversation turn. Content is a list of typed blocks so we can
+    carry text, tool calls, and tool results uniformly."""
+    role: Literal["user", "assistant", "system"]
+    blocks: list[dict]
+    # Block shapes:
+    #   {"type": "text", "text": "..."}
+    #   {"type": "tool_call", "id": "...", "name": "...", "arguments": {...}}
+    #   {"type": "tool_result", "tool_call_id": "...", "name": "...",
+    #    "content": "...", "is_error": False}
+
+
+# ---------------------------------------------------------------------------
+# Streaming event shapes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StreamEvent:
+    """One event in a streamed agent turn.
+
+    Types:
+      'text_delta'   : .text is an incremental chunk of assistant text
+      'tool_call'    : a complete tool call was decided; .tool_call set
+      'tool_result'  : a tool finished; .tool_call_id, .text, .is_error set
+      'turn_end'     : one provider round done (the loop may continue)
+      'done'         : full agent turn done; .text is the final reply
+      'error'        : something failed; .text holds the message
+    """
+    type: Literal["text_delta", "tool_call", "tool_result",
+                  "turn_end", "done", "error"]
+    text: str | None = None
+    tool_call: ToolCall | None = None
+    tool_call_id: str | None = None
+    is_error: bool = False
+    session_id: str | None = None
+
+
+# What providers' .stream() yields. A minimal contract that every vendor's
+# streaming SDK can satisfy: text deltas plus exactly one final response.
+ProviderStreamEvent = Union[
+    tuple[Literal["text_delta"], str],
+    tuple[Literal["final"], LLMResponse],
+]

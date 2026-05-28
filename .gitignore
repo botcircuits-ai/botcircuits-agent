@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local environment variables
+.env
+.env.*
+!.env.example
+
+# BotCircuits local settings (do not commit)
+.botcircuits/settings.local.json
+
+.playwright-mcp
+sandbox
