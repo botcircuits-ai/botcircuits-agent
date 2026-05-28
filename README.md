@@ -477,7 +477,6 @@ Schedules use standard 5-field cron expressions evaluated in **UTC** (`*`, liter
 ##### Kubernetes ( TODO )
 
 ## License
+Licensed under the Apache License, Version 2.0 [LICENSE](LICENSE)
 
-MIT — see [LICENSE](LICENSE)
-
-Built by [BotCircuits](https://botcircuits.ai)
+## Built by [BotCircuits](https://botcircuits.ai)
