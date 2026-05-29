@@ -54,6 +54,7 @@ from botcircuits.cli.commands_workflow import add_workflow_subparser, run_workfl
 from botcircuits.cli.config import CLIConfig, ConfigError, resolve
 from botcircuits.cli.render import run_blocking, run_streaming
 from botcircuits.cli.settings import load_layered_settings
+from botcircuits.cli.setup import add_setup_subparser, run_setup_wizard
 from botcircuits.cli.system_prompt import DEFAULT_SYSTEM_PROMPT
 
 
@@ -119,6 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="subcommand")
     add_mcp_subparser(sub)
     add_workflow_subparser(sub)
+    add_setup_subparser(sub)
     return p
 
 
@@ -330,6 +332,8 @@ def main() -> None:
             rc = run_mcp_command(args)
         elif args.subcommand == "workflow":
             rc = run_workflow_command(args)
+        elif args.subcommand == "setup":
+            rc = run_setup_wizard(args)
         else:
             rc = asyncio.run(amain(args))
     except KeyboardInterrupt:

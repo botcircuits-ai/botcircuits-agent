@@ -1,6 +1,6 @@
 # botcircuits-agent
 
-The workflow-native AI agent where an LLM handles the reasoning and tool calls for each step, while a deterministic state machine controls the overall flow. The result: reliable, predictable, token-efficient multi-step automation without depending on an LLM to drive everything.
+The workflow-native AI agent where an LLM handles the reasoning and tool calls for each step, while a deterministic state machine controls the overall flow. The result:predictable and token-efficient multi-step automation without depending on an LLM to drive everything.
 
 ![botcircuits-agent-solution](docs/solution.png) 
 ---
