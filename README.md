@@ -1,6 +1,6 @@
 # botcircuits-agent
 
-The workflow-native AI agent where an LLM handles the reasoning and tool calls for each step, while a deterministic state machine controls the overall flow. The result: reliable, predictable, token-efficient multi-step automation without depending on an LLM to drive everything.
+The workflow-native AI agent where an LLM handles the reasoning and tool calls for each step, while a deterministic state machine controls the overall flow. The result:predictable and token-efficient multi-step automation without depending on an LLM to drive everything.
 
 ![botcircuits-agent-solution](docs/solution.png) 
 ---
@@ -36,7 +36,28 @@ source .venv/bin/activate    # bash / zsh
 uv sync
 ```
 
-Copy the env template and add your provider key:
+Configure your provider, model, and API key:
+
+```bash
+botcircuits setup
+```
+
+The wizard walks you through provider (`anthropic` / `openai` / `gemini`), model, and API key with arrow-key navigation (↑/↓ to move, Enter to select, Esc to keep the current value). Each pick is saved as you go:
+
+- `provider` and `model` → `~/.botcircuits/settings.json`
+- API key → `~/.botcircuits/.env` (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`, file mode `0600`)
+
+Re-running `botcircuits setup` shows your existing values as defaults, and an existing API key gives you a **Keep / Replace / Clear** choice instead of re-prompting for the secret.
+
+| Form | What it does |
+|---|---|
+| `botcircuits setup` | Full wizard (currently the LLM section) |
+| `botcircuits setup llm` | Just the LLM provider/model/API-key section |
+| `botcircuits setup --user` | Write to `~/.botcircuits/` (default) |
+| `botcircuits setup --project` | Write to `./.botcircuits/settings.json` (shared via VCS) |
+| `botcircuits setup --local` | Write to `./.botcircuits/settings.local.json` (gitignored personal override) |
+
+Prefer to configure by hand? Copy the env template instead:
 
 ```bash
 cp .env.example .env
