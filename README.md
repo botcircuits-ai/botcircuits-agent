@@ -8,13 +8,7 @@ The workflow-native AI agent where an LLM handles the reasoning and tool calls f
 ## Quick Start
 
 ### Setup
-#### Quick install
-###### Linux, macOS, WSL2, Termux
-```bash
-curl -fsSL https://raw.githubusercontent.com/botcircuits-ai/botcircuits-agent/main/scripts/install.sh | bash
-```
-
-#### Or Clone and install
+#### Clone and install
 
 ```bash
 # 1. Install uv (skip if you already have it)
