@@ -20,6 +20,12 @@ dependencies = [
     "aiohttp>=3.9.0",
 ]
 
+[project.optional-dependencies]
+evals = [
+    "deepeval>=4.0.0",
+    "pytest>=8.0.0",
+]
+
 [project.scripts]
 botcircuits = "botcircuits.cli:main"
 botcircuits-gateway = "botcircuits.gateway.__main__:main"
