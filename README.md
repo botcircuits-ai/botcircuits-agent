@@ -129,6 +129,7 @@ CLI flags always win over JSON. A starter file is at [.botcircuits/settings.exam
 | `/skills` | List filesystem skills |
 | `/memory` | Show persistent memory |
 | `/workflow add "<prompt>"` | Author a new workflow from natural language |
+| `/workflow add --file <path.md>` | Author a new workflow from a prompt in a Markdown file |
 | `/workflow edit "<prompt>" --name <wf>` | Edit an existing workflow |
 | `/workflow run --name <wf> [--initial-args '{"k":"v"}']` | Force-start a workflow tool, bypassing the model's tool choice |
 | `/quit` | Exit |
@@ -161,6 +162,12 @@ By default the model picks a slug for the workflow `name`. Pass `--name <wf>` to
 ```
 
 `--name` must be slug-safe (letters, digits, `_`, `-`).
+
+For a long or reusable prompt, keep it in a Markdown file and point `--file` at it instead of pasting the text inline. The file's contents become the workflow instruction; `--file` and an inline `"<prompt>"` are mutually exclusive:
+
+```
+/workflow add --file ./prompts/check_order_status.md --name check_order_status
+```
 
 To change an existing workflow:
 

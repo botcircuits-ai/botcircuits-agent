@@ -29,6 +29,7 @@ from typing import Literal, Optional
 
 WORKFLOW_USAGE = (
     'usage: /workflow add "<prompt>" [--name <workflow-name>]\n'
+    '       /workflow add --file <path.md> [--name <workflow-name>]\n'
     '       /workflow edit "<prompt>" --name <workflow-name>\n'
     '       /workflow run --name <workflow-name> [--initial-args \'{"k":"v"}\']'
 )
@@ -96,7 +97,7 @@ def parse_workflow_command(rest: str) -> WorkflowCommand:
     prompt, flags = _split_prompt_and_flags(tokens[1:])
 
     if sub == "add":
-        unexpected = set(flags) - {"--name"}
+        unexpected = set(flags) - {"--name", "--file"}
         if unexpected:
             return WorkflowCommand(
                 kind="error",
@@ -105,6 +106,27 @@ def parse_workflow_command(rest: str) -> WorkflowCommand:
                     f"{', '.join(sorted(unexpected))}"
                 ),
             )
+
+        # --file points at a .md file whose contents become the prompt.
+        # It's an alternative to the inline "<prompt>" positional, not a
+        # supplement — supplying both is ambiguous, so reject it.
+        if "--file" in flags:
+            if prompt:
+                return WorkflowCommand(
+                    kind="error",
+                    show_usage=False,
+                    error=(
+                        "[workflow add] pass either a \"<prompt>\" or "
+                        "--file <path>, not both"
+                    ),
+                )
+            content, file_err = _read_prompt_file(flags["--file"])
+            if file_err is not None:
+                return WorkflowCommand(
+                    kind="error", show_usage=False, error=file_err,
+                )
+            prompt = content
+
         if not prompt:
             return WorkflowCommand(kind="error", error="missing <prompt>")
         target = flags.get("--name")
@@ -541,6 +563,34 @@ def _safe_load_json(path: Path):
     if not isinstance(data, dict):
         return f"[workflow edit] {path} is not a JSON object"
     return data
+
+
+def _read_prompt_file(raw_path: str) -> tuple[str, Optional[str]]:
+    """Read a `--file` prompt path, returning `(contents, error)`.
+
+    Used by `/workflow add --file <path.md>`: the file's text replaces
+    the inline `"<prompt>"` positional. On success returns the stripped
+    contents and `None`; on any failure returns `("", <message>)` so the
+    caller can surface it without try/except plumbing (same union style
+    as `_safe_load_json`). The `.md` extension is expected but not
+    enforced — any UTF-8 text file works.
+    """
+    raw_path = raw_path.strip()
+    if not raw_path:
+        return "", "[workflow add] --file requires a path"
+
+    path = Path(raw_path).expanduser()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "", f"[workflow add] --file not found: {path}"
+    except OSError as e:
+        return "", f"[workflow add] could not read --file {path}: {e}"
+
+    text = text.strip()
+    if not text:
+        return "", f"[workflow add] --file is empty: {path}"
+    return text, None
 
 
 def _split_prompt_and_flags(
