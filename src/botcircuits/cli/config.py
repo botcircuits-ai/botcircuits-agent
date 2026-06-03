@@ -57,6 +57,12 @@ class CLIConfig:
     show_tool_results: bool = False
     mcp_servers: list[MCPServer] = field(default_factory=list)
 
+    # Tool-use strategy passed to the Agent. "native" (default) uses the
+    # provider's structured function-calling API; "react" describes tools
+    # in the system prompt and parses Thought/Action text. See
+    # agent/react.py.
+    mode: str = "native"
+
     # Per-tool config overrides keyed by tool name. Each value is either a
     # dict of overrides or null to disable the tool. Threaded into
     # `default_registry()` unchanged — see agent/tools/__init__.py for
@@ -235,6 +241,11 @@ def load_config_file(path: str) -> dict[str, Any]:
             f"--config has unknown keys: {sorted(unknown)}. "
             f"Allowed: {sorted(_ALLOWED_KEYS)}"
         )
+    if "mode" in data:
+        if data["mode"] not in ("native", "react"):
+            raise ConfigError(
+                f"`mode` must be 'native' or 'react' (got {data['mode']!r})"
+            )
     if "tools" in data:
         data["tools"] = _parse_tools(data["tools"])
     if "workflow" in data:

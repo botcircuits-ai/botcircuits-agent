@@ -19,3 +19,6 @@ wheels/
 
 .playwright-mcp
 sandbox
+
+.claude/settings.json
+CLAUDE.md

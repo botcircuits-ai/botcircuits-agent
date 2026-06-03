@@ -273,6 +273,7 @@ async def amain(args: argparse.Namespace) -> int:
         mcp_servers=cfg.mcp_servers,
         max_tokens=cfg.max_tokens,
         max_steps=cfg.max_steps,
+        mode=cfg.mode,
     ) as agent:
 
         if interactive:

@@ -16,11 +16,16 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 
 from botcircuits.providers.base import LLMProvider
 from botcircuits.types import LLMResponse, Message, StreamEvent, ToolCall
 from botcircuits.agent.mcp import LocalMCPManager, MCPServer
+from botcircuits.agent.react import (
+    format_observation,
+    parse_react_step,
+    render_react_preamble,
+)
 from botcircuits.agent.skill import (
     DEFAULT_SKILL_ROOTS,
     SkillSpec,
@@ -146,6 +151,7 @@ class Agent:
         max_steps: int = MAX_AGENT_STEPS,
         store: ConversationStore | None = None,
         enable_workflows: bool = True,
+        mode: Literal["native", "react"] = "native",
     ):
         self.provider = provider
         self.user_tools = tools or ToolRegistry()
@@ -153,6 +159,14 @@ class Agent:
         self.max_tokens = max_tokens
         self.max_steps = max_steps
         self.store = store or ConversationStore()
+        # Tool-use strategy:
+        #   "native" — hand tools to the provider's structured tool-use API
+        #     and read resp.tool_calls back. The default; most robust.
+        #   "react"  — describe tools in the system prompt and parse a
+        #     Thought/Action/Action Input text block out of the model's
+        #     reply (see agent/react.py). Works on any provider and yields
+        #     a visible reasoning trace, at the cost of parse brittleness.
+        self.mode = mode
         # When False, workflow tools registered on the registry are
         # hidden from the provider call and the workflow-related
         # system-prompt reminder is suppressed. The tools stay in the
@@ -237,7 +251,7 @@ class Agent:
     # -- workflow gating ---------------------------------------------------
 
     def _exposed_tools(self) -> list:
-        """Tool list handed to the provider for the next call.
+        """Tool list handed to the provider's structured tool-use API.
 
         With workflows enabled (the default) this is just every tool
         on the registry. With workflows disabled, workflow tools —
@@ -246,7 +260,19 @@ class Agent:
         the registry so the rest of the agent code can still see them
         (the eval framework, /tools listing, etc.); only the surface
         the model sees changes.
+
+        In ReAct mode this returns [] — tools are described in the
+        system prompt instead (see `_react_tools` / `_system_with_reminder`),
+        so the provider gets no structured tool spec.
         """
+        if self.mode == "react":
+            return []
+        return self._react_tools()
+
+    def _react_tools(self) -> list:
+        """The tools the model is allowed to use this call, after workflow
+        gating. Shared by both modes: native passes these to the provider's
+        tool API, react renders them into the prompt preamble."""
         all_tools = self.tools.all()
         if self.enable_workflows:
             return all_tools
@@ -254,13 +280,82 @@ class Agent:
                 if getattr(t, "_workflow_state", None) is None]
 
     def _system_with_reminder(self, system: str | None) -> str | None:
-        """System prompt with the workflow reminder block conditionally
-        attached. Skipped entirely when workflows are disabled — the
-        reminder talks about workflow tools the model can't see, which
-        would just confuse it."""
-        if not self.enable_workflows:
-            return system
-        return _with_workflow_reminder(system, self.tools)
+        """System prompt with mode-specific blocks attached.
+
+        Native mode appends the workflow reminder (unless workflows are
+        disabled). ReAct mode additionally appends the tool preamble that
+        teaches the Thought/Action/Action Input format — without it the
+        model has no way to know which tools exist, since they never reach
+        the provider's tool API.
+        """
+        if self.enable_workflows:
+            system = _with_workflow_reminder(system, self.tools)
+        if self.mode == "react":
+            preamble = render_react_preamble(self._react_tools())
+            if preamble:
+                system = (system or "") + preamble
+        return system
+
+    def _interpret(self, resp: LLMResponse) -> tuple[str, list[ToolCall], bool]:
+        """Normalize a provider response into (assistant_text, tool_calls,
+        is_terminal) so the rest of the loop is mode-agnostic.
+
+        - native: tool calls come straight off `resp.tool_calls`; the turn
+          is terminal when the model didn't ask for tools.
+        - react: parse the reply text for a Thought/Action block. A parsed
+          Action becomes a single-element tool_calls list; a Final Answer
+          (or unparseable text) is terminal with the answer as the text.
+
+        `assistant_text` is what we persist as the assistant turn's text
+        block. In react mode that's the full reasoning trace (so the
+        Thought/Action lines stay in history and the model sees its own
+        prior format), except on a terminal turn where we store the clean
+        Final Answer rather than the scaffolding.
+        """
+        if self.mode != "react":
+            terminal = resp.stop_reason != "tool_use" or not resp.tool_calls
+            return resp.text, resp.tool_calls, terminal
+
+        step = parse_react_step(resp.text)
+        if step.action is None:
+            # Terminal: store the extracted Final Answer, not the raw
+            # "Thought: ... Final Answer: ..." scaffolding.
+            return step.final or resp.text, [], True
+        # Non-terminal: keep the full trace (Thought + Action) in history.
+        return resp.text, [step.action], False
+
+    def _result_message(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[tuple[str, bool]],
+    ) -> Message:
+        """Pack tool outputs into the user-role message fed back to the model.
+
+        Native mode uses structured `tool_result` blocks keyed by call id —
+        the provider matches them to the original tool_use blocks. ReAct
+        mode instead emits a plain-text `Observation:` block, because the
+        model was prompted to expect that literal format in its transcript;
+        feeding back structured blocks it never produced would break the
+        format it's imitating. ReAct is one-action-per-turn, so there's a
+        single observation.
+        """
+        if self.mode == "react":
+            output, is_error = results[0]
+            return Message(role="user", blocks=[{
+                "type": "text",
+                "text": format_observation(output, is_error),
+            }])
+        result_blocks = [
+            {
+                "type": "tool_result",
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "content": output,
+                "is_error": is_error,
+            }
+            for tc, (output, is_error) in zip(tool_calls, results)
+        ]
+        return Message(role="user", blocks=result_blocks)
 
     # -- non-streaming chat -------------------------------------------------
 
@@ -287,10 +382,12 @@ class Agent:
                     max_tokens=self.max_tokens,
                 )
 
+                text, tool_calls, terminal = self._interpret(resp)
+
                 assistant_blocks: list[dict] = []
-                if resp.text:
-                    assistant_blocks.append({"type": "text", "text": resp.text})
-                for tc in resp.tool_calls:
+                if text:
+                    assistant_blocks.append({"type": "text", "text": text})
+                for tc in tool_calls:
                     assistant_blocks.append({
                         "type": "tool_call",
                         "id": tc.id, "name": tc.name, "arguments": tc.arguments,
@@ -298,8 +395,8 @@ class Agent:
                 convo.messages.append(Message(role="assistant",
                                               blocks=assistant_blocks))
 
-                if resp.stop_reason != "tool_use" or not resp.tool_calls:
-                    return resp.text, convo.session_id
+                if terminal:
+                    return text, convo.session_id
 
                 # Build tool-invocation context once per turn. The same
                 # snapshot is handed to every tool call in this round.
@@ -308,22 +405,13 @@ class Agent:
                     "last_user_message": _last_user_text(convo.messages),
                     "session_id": convo.session_id,
                 }
-                # Run all tool calls concurrently.
+                # Run all tool calls concurrently (react mode yields exactly
+                # one, native may yield several).
                 results = await asyncio.gather(*[
                     self.tools.run(tc.name, tc.arguments, tool_context)
-                    for tc in resp.tool_calls
+                    for tc in tool_calls
                 ])
-                result_blocks = [
-                    {
-                        "type": "tool_result",
-                        "tool_call_id": tc.id,
-                        "name": tc.name,
-                        "content": output,
-                        "is_error": is_error,
-                    }
-                    for tc, (output, is_error) in zip(resp.tool_calls, results)
-                ]
-                convo.messages.append(Message(role="user", blocks=result_blocks))
+                convo.messages.append(self._result_message(tool_calls, results))
 
             return "[agent stopped: hit max_steps]", convo.session_id
 
@@ -367,12 +455,13 @@ class Agent:
                             final_resp = payload
                     assert final_resp is not None, "provider didn't yield 'final'"
 
+                    text, tool_calls, terminal = self._interpret(final_resp)
+
                     # Persist the assistant turn.
                     assistant_blocks: list[dict] = []
-                    if final_resp.text:
-                        assistant_blocks.append({"type": "text",
-                                                 "text": final_resp.text})
-                    for tc in final_resp.tool_calls:
+                    if text:
+                        assistant_blocks.append({"type": "text", "text": text})
+                    for tc in tool_calls:
                         assistant_blocks.append({
                             "type": "tool_call",
                             "id": tc.id, "name": tc.name,
@@ -381,15 +470,18 @@ class Agent:
                     convo.messages.append(Message(role="assistant",
                                                   blocks=assistant_blocks))
 
-                    # Surface tool-call decisions before running them.
-                    for tc in final_resp.tool_calls:
+                    # Surface tool-call decisions before running them. In
+                    # react mode these are parsed from the text the UI
+                    # already streamed, so the event is what lets a UI show
+                    # 'calling X' rather than re-rendering the raw Action.
+                    for tc in tool_calls:
                         yield StreamEvent(type="tool_call", tool_call=tc,
                                           session_id=sid)
 
                     yield StreamEvent(type="turn_end", session_id=sid)
 
-                    if final_resp.stop_reason != "tool_use" or not final_resp.tool_calls:
-                        final_text = final_resp.text
+                    if terminal:
+                        final_text = text
                         hit_step_limit = False
                         break
 
@@ -410,7 +502,7 @@ class Agent:
                         return tc, out, err
 
                     tasks = [asyncio.create_task(_run(tc))
-                             for tc in final_resp.tool_calls]
+                             for tc in tool_calls]
                     results: list[tuple[ToolCall, str, bool]] = []
                     for coro in asyncio.as_completed(tasks):
                         tc, out, err = await coro
@@ -419,20 +511,13 @@ class Agent:
                                           tool_call_id=tc.id, text=out,
                                           is_error=err, session_id=sid)
 
-                    # Append results in original order (call/result pairing).
+                    # Re-pair results to calls in original order, then hand
+                    # to _result_message (structured blocks for native, a
+                    # single Observation: text block for react).
                     by_id = {tc.id: (out, err) for tc, out, err in results}
-                    result_blocks = []
-                    for tc in final_resp.tool_calls:
-                        out, err = by_id[tc.id]
-                        result_blocks.append({
-                            "type": "tool_result",
-                            "tool_call_id": tc.id,
-                            "name": tc.name,
-                            "content": out,
-                            "is_error": err,
-                        })
-                    convo.messages.append(Message(role="user",
-                                                  blocks=result_blocks))
+                    ordered = [by_id[tc.id] for tc in tool_calls]
+                    convo.messages.append(
+                        self._result_message(tool_calls, ordered))
 
                 if hit_step_limit:
                     final_text = "[agent stopped: hit max_steps]"

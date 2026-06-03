@@ -117,6 +117,17 @@ The CLI auto-loads these in order (later layers win):
 
 CLI flags always win over JSON. A starter file is at [.botcircuits/settings.example.json](.botcircuits/settings.example.json).
 
+#### Tool-use mode
+
+`"mode"` selects how the agent invokes tools:
+
+| Mode | Behaviour |
+|---|---|
+| `"native"` (default) | Tools are handed to the provider's structured function-calling API; tool calls are read back as typed objects. Most robust. |
+| `"react"` | Tools are described in the system prompt and the model emits a `Thought / Action / Action Input` text block, parsed by the agent and fed back as an `Observation:`. Works on any provider regardless of native tool-use quality, and exposes a visible reasoning trace — at the cost of parse brittleness. Classic ReAct (one action per turn). |
+
+Both modes run the same loop and expose the same tools; only the call/parse mechanism differs. Set it in `settings.json` (`"mode": "react"`).
+
 #### Slash commands inside the CLI
 
 | Command | Action |
