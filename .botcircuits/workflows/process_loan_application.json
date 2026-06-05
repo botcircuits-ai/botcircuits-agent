@@ -1,0 +1,91 @@
+{
+  "name": "process_loan_application",
+  "description": "Local workflow process_loan_application.",
+  "flow": {
+    "start": "start",
+    "steps": {
+      "start": {
+        "type": "start",
+        "id": "start",
+        "next": "validate_application"
+      },
+      "apply_policy_rules": {
+        "id": "apply_policy_rules",
+        "type": "agentAction",
+        "settings": {
+          "action": "Apply policy rules for the loan application of {{applicant_name}} for product {{product}} and amount {{amount}}."
+        },
+        "conditions": [
+          {
+            "next": "escalate_application",
+            "condition": "If income is less than (monthly_debt * 10), then the application should be escalated."
+          },
+          {
+            "next": "approve_application",
+            "condition": "If the application meets all criteria, then it should be approved."
+          },
+          {
+            "next": "deny_application",
+            "condition": "Otherwise, the application should be denied."
+          }
+        ]
+      },
+      "deny_application": {
+        "id": "deny_application",
+        "next": "notify_applicant",
+        "type": "agentAction",
+        "settings": {
+          "action": "Deny the loan application for {{applicant_name}} for product {{product}} with amount {{amount}}."
+        }
+      },
+      "validate_application": {
+        "id": "validate_application",
+        "type": "agentAction",
+        "settings": {
+          "action": "Validate the completeness and validity of the loan application for {{applicant_name}}."
+        },
+        "conditions": [
+          {
+            "next": "escalate_application",
+            "condition": "If income_verified is false, then the application should be escalated."
+          },
+          {
+            "next": "deny_application",
+            "condition": "If credit_score is less than 600, then the application should be denied."
+          },
+          {
+            "next": "escalate_application",
+            "condition": "If product is P-HOME and amount is greater than 500000, then the application should be escalated."
+          },
+          {
+            "next": "apply_policy_rules",
+            "condition": "Otherwise, proceed to apply policy rules."
+          }
+        ]
+      },
+      "escalate_application": {
+        "id": "escalate_application",
+        "next": "notify_applicant",
+        "type": "agentAction",
+        "settings": {
+          "action": "Escalate the loan application for {{applicant_name}} for product {{product}} with amount {{amount}} for further review."
+        }
+      },
+      "notify_applicant": {
+        "id": "notify_applicant",
+        "type": "agentAction",
+        "settings": {
+          "action": "Notify {{applicant_name}} about the decision on their loan application."
+        }
+      },
+      "approve_application": {
+        "id": "approve_application",
+        "next": "notify_applicant",
+        "type": "agentAction",
+        "settings": {
+          "action": "Approve the loan application for {{applicant_name}} for product {{product}} with amount {{amount}}."
+        }
+      }
+    }
+  }
+}

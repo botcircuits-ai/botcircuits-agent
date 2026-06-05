@@ -293,8 +293,10 @@ async def amain(args: argparse.Namespace) -> int:
             if not msg.strip():
                 if interactive:
                     continue
-                # piped empty line → done
-                return 0
+                # piped blank line → skip it and keep reading (a multi-turn
+                # script may separate turns with blank lines). EOF (msg is None,
+                # handled above) is what ends a piped run.
+                continue
 
             if msg.startswith("/"):
                 if interactive:
@@ -322,8 +324,11 @@ async def amain(args: argparse.Namespace) -> int:
                 out(C.yellow("(interrupted)"))
                 # session keeps going
 
-            if not interactive:
-                return 0  # piped: one message in, one message out
+            # Piped mode used to stop after one message. Instead, keep reading:
+            # each subsequent stdin line is the next turn of a scripted
+            # multi-turn run, sharing this process's in-memory session (so the
+            # workflow / conversation state carries across turns). The loop ends
+            # at EOF (read_user_message returns None, handled at the top).
 
 
 def main() -> None:

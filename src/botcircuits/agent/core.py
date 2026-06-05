@@ -391,6 +391,8 @@ class Agent:
                     assistant_blocks.append({
                         "type": "tool_call",
                         "id": tc.id, "name": tc.name, "arguments": tc.arguments,
+                        # Carried for providers that must replay it (Gemini).
+                        "thought_signature": getattr(tc, "thought_signature", None),
                     })
                 convo.messages.append(Message(role="assistant",
                                               blocks=assistant_blocks))
@@ -466,6 +468,9 @@ class Agent:
                             "type": "tool_call",
                             "id": tc.id, "name": tc.name,
                             "arguments": tc.arguments,
+                            # Carried for providers that must replay it (Gemini).
+                            "thought_signature": getattr(
+                                tc, "thought_signature", None),
                         })
                     convo.messages.append(Message(role="assistant",
                                                   blocks=assistant_blocks))

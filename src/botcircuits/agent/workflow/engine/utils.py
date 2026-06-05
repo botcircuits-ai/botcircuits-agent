@@ -48,3 +48,24 @@ def coerce_for_compare(value: Any) -> Any:
     if isinstance(value, str):
         return value.strip()
     return value
+
+
+def to_number(value: Any) -> float | None:
+    """Best-effort coerce a slot/check value to a float for ordered (`<`, `<=`,
+    `>`, `>=`) comparisons. Returns ``None`` when the value can't be compared
+    numerically — e.g. an unfilled slot (``None``), a non-numeric string, or a
+    bool (which we deliberately exclude so ``True``/``1`` don't conflate).
+
+    Ordered comparisons must coerce *both* operands through this so a slot that
+    arrives as a string (`"640"`) or was never filled (`None`) routes to the
+    fall-through branch instead of raising ``TypeError``."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None

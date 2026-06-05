@@ -22,6 +22,12 @@ class ToolCall:
     id: str
     name: str
     arguments: dict
+    # Opaque provider-specific data that must be echoed back when this tool
+    # call is replayed in conversation history. Gemini "thinking" models
+    # (gemini-2.5+/3.x) attach a `thought_signature` to each function-call part
+    # and REJECT the next request (400 "missing a thought_signature") if it
+    # isn't sent back. Other providers leave this None.
+    thought_signature: bytes | None = None
 
 
 @dataclass
