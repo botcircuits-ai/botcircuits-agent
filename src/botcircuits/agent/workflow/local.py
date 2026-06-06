@@ -427,6 +427,10 @@ async def run_workflow(
     conditions = inner.get("conditions", [])
     choices = inner.get("choices", [])
     variables = inner.get("variables", [])
+    # `kind` is "question" when the engine paused on a `question` step —
+    # the tool wrapper uses it to force a `human_feedback` call. Plain
+    # agentAction steps leave it unset.
+    kind = inner.get("kind")
 
     # Capture the step the engine just paused on BEFORE we (maybe) drop
     # the session — callers (evaluation, debugging) want this even on
@@ -449,6 +453,7 @@ async def run_workflow(
         "session_id": sid,
         "action": action,
         "done": done,
+        "kind": kind,
         "running_step": running_step,
         "messages": [inner] if inner else [],
         "conditions": conditions,

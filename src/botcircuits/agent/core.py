@@ -15,6 +15,8 @@ Use as an async context manager:
 from __future__ import annotations
 
 import asyncio
+import json
+import uuid
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
@@ -34,9 +36,15 @@ from botcircuits.agent.skill import (
 )
 from botcircuits.agent.store import ConversationStore
 from botcircuits.agent.tools import ToolRegistry
+from botcircuits.agent.tools.builtins.human_feedback import HUMAN_FEEDBACK_TOOL
 from botcircuits.agent.workflow import active_workflow_names
 
 MAX_AGENT_STEPS = 500
+
+# Synthetic id prefix for the workflow tool calls the loop injects to
+# advance an active workflow after the model stops acting. Lets us tell
+# loop-injected calls apart from model-issued ones in history if needed.
+_AUTO_RECALL_ID_PREFIX = "wf-autorecall-"
 
 # Truncation cap on the last-assistant-message we hand to tools via context.
 # Variable normalization (the workflow tool's main consumer of this field)
@@ -98,7 +106,10 @@ def _with_workflow_reminder(system: str | None, reg: ToolRegistry) -> str | None
     """Append a workflow-related reminder to `system`.
 
     Two cases:
-      - A workflow is mid-run: remind the model to re-call it to advance.
+      - A workflow is mid-run: tell the model to act on the current step
+        only. The agent loop auto-recalls the workflow tool once the
+        model finishes acting (no tool calls left), so the model must
+        NOT call the workflow tool itself — that would double-advance.
       - No workflow is active but workflow tools exist: remind the model
         that those tools MUST be called as the first action when the
         user's request matches one — do NOT ask clarifying questions in
@@ -111,10 +122,10 @@ def _with_workflow_reminder(system: str | None, reg: ToolRegistry) -> str | None
         name = names[0]
         reminder = (
             f"\n\n[Active workflow] The workflow tool '{name}' is mid-execution. "
-            f"After you finish the action of the current step, you MUST call "
-            f"'{name}' again (with empty args) to receive the next step. "
-            f"Skip the re-call only when the current step asks the user a "
-            f"question and you need their reply first."
+            f"Perform ONLY the action of the current step (call a tool, send "
+            f"a reply, or call 'human_feedback' if the step asks the user a "
+            f"question). Do NOT call '{name}' yourself — the next step is "
+            f"requested for you automatically once you finish acting."
         )
         return (system or "") + reminder
 
@@ -137,6 +148,58 @@ def _with_workflow_reminder(system: str | None, reg: ToolRegistry) -> str | None
         "not from you skipping the call."
     )
     return (system or "") + reminder
+
+
+def _human_feedback_pause(
+    tool_calls: list[ToolCall],
+    results: list[tuple[str, bool]],
+) -> str | None:
+    """If a `human_feedback` call ran this round, return the question to
+    surface to the user (so the loop can pause); else None.
+
+    `human_feedback`'s handler returns `{"paused": true, "question": ...}`,
+    JSON-encoded into the result text. We match by tool name and pull the
+    question back out of that payload, falling back to the model's own
+    `question` argument, then the raw result text.
+    """
+    for tc, (output, _is_error) in zip(tool_calls, results):
+        if tc.name != HUMAN_FEEDBACK_TOOL:
+            continue
+        question = ""
+        try:
+            payload = json.loads(output)
+            if isinstance(payload, dict):
+                question = payload.get("question") or ""
+        except (ValueError, TypeError):
+            question = ""
+        if not question and isinstance(tc.arguments, dict):
+            question = tc.arguments.get("question") or ""
+        return question or output
+    return None
+
+
+def _auto_recall_calls(reg: ToolRegistry) -> list[ToolCall]:
+    """Synthetic workflow tool calls that advance every active workflow.
+
+    Called when the model produced no tool calls of its own but a
+    workflow is still mid-run: the loop injects these to fetch the next
+    step (re-entry runs slot normalization inside the workflow tool),
+    instead of relying on the model to remember to re-call it. Empty
+    args — the step's inputs were already collected via the actions the
+    model just performed; the normalizer pulls them from the recent
+    transcript on re-entry.
+
+    Normally there's exactly one active workflow, but we handle several
+    defensively (one call each).
+    """
+    return [
+        ToolCall(
+            id=f"{_AUTO_RECALL_ID_PREFIX}{uuid.uuid4().hex[:8]}",
+            name=name,
+            arguments={},
+        )
+        for name in active_workflow_names(reg)
+    ]
 
 
 class Agent:
@@ -384,6 +447,17 @@ class Agent:
 
                 text, tool_calls, terminal = self._interpret(resp)
 
+                # The model stopped issuing tool calls. If a workflow is
+                # still mid-run, don't end the turn — auto-recall the
+                # workflow tool to advance to the next step (slot
+                # normalization happens inside that call). Only when no
+                # workflow is active is an empty-tool turn truly terminal.
+                if terminal and self.enable_workflows:
+                    recall = _auto_recall_calls(self.tools)
+                    if recall:
+                        tool_calls = recall
+                        terminal = False
+
                 assistant_blocks: list[dict] = []
                 if text:
                     assistant_blocks.append({"type": "text", "text": text})
@@ -414,6 +488,13 @@ class Agent:
                     for tc in tool_calls
                 ])
                 convo.messages.append(self._result_message(tool_calls, results))
+
+                # If the model asked the user a question via human_feedback,
+                # pause the loop: surface the question as the reply and hand
+                # control back to the user. Their next message resumes.
+                paused = _human_feedback_pause(tool_calls, results)
+                if paused is not None:
+                    return paused, convo.session_id
 
             return "[agent stopped: hit max_steps]", convo.session_id
 
@@ -458,6 +539,16 @@ class Agent:
                     assert final_resp is not None, "provider didn't yield 'final'"
 
                     text, tool_calls, terminal = self._interpret(final_resp)
+
+                    # Auto-advance an active workflow: if the model stopped
+                    # issuing tool calls but a workflow is still mid-run,
+                    # inject a recall of the workflow tool (slot
+                    # normalization runs inside it) instead of ending.
+                    if terminal and self.enable_workflows:
+                        recall = _auto_recall_calls(self.tools)
+                        if recall:
+                            tool_calls = recall
+                            terminal = False
 
                     # Persist the assistant turn.
                     assistant_blocks: list[dict] = []
@@ -523,6 +614,15 @@ class Agent:
                     ordered = [by_id[tc.id] for tc in tool_calls]
                     convo.messages.append(
                         self._result_message(tool_calls, ordered))
+
+                    # human_feedback pauses the loop: surface its question
+                    # as the final reply and hand control back to the user
+                    # (their next message resumes the run).
+                    paused = _human_feedback_pause(tool_calls, ordered)
+                    if paused is not None:
+                        final_text = paused
+                        hit_step_limit = False
+                        break
 
                 if hit_step_limit:
                     final_text = "[agent stopped: hit max_steps]"

@@ -9,13 +9,17 @@ two values are recognized:
                      branch is evaluated on RE-ENTRY (the next time the
                      workflow tool is called, after the LLM has had a
                      chance to fill variables via tool args).
+  - `question`     → like `agentAction`, but the emitted payload is
+                     tagged `kind: "question"` so the tool wrapper forces
+                     a `human_feedback` call (which pauses the loop until
+                     the user replies).
 
-Branching lives on `agentAction` itself — there is no separate `choice`
-step type. `conditions` and `choices` sit at the step root next to
-`type` and `next` because they describe control flow, not step payload.
-The executor records a `pendingBranch` marker on the saved session when
-it pauses on a step with conditions, then resolves it on re-entry by
-evaluating the choices against current slot values.
+Branching lives on `agentAction`/`question` itself — there is no
+separate `choice` step type. `conditions` and `choices` sit at the step
+root next to `type` and `next` because they describe control flow, not
+step payload. The executor records a `pendingBranch` marker on the
+saved session when it pauses on a step with conditions, then resolves
+it on re-entry by evaluating the choices against current slot values.
 
 Anything else (`message`, `prompt`, `aiTask`, `choice`, …) raises so
 unsupported steps don't silently do nothing.
@@ -27,6 +31,7 @@ from typing import Any
 
 from botcircuits.agent.workflow.engine.handlers.action import handle_action
 from botcircuits.agent.workflow.engine.handlers.choice import evaluate_choices
+from botcircuits.agent.workflow.engine.handlers.question import handle_question
 from botcircuits.agent.workflow.engine.state import WorkflowStateContext
 
 
@@ -49,8 +54,9 @@ def _invoke_step(
 
     if step_type == "start":
         pass
-    elif step_type == "agentAction":
-        response = handle_action(event)
+    elif step_type in ("agentAction", "question"):
+        handler = handle_question if step_type == "question" else handle_action
+        response = handler(event)
         if response and response.get("fallbackStep"):
             next_step = response["fallbackStep"]
         if response and response.get("message"):
@@ -59,7 +65,8 @@ def _invoke_step(
         raise ValueError(
             f"Local workflow engine does not support step type {step_type!r} "
             f"(step {current_step_id!r}). Supported types: 'start', "
-            f"'agentAction'. To branch, put `conditions` on an agentAction."
+            f"'agentAction', 'question'. To branch, put `conditions` on an "
+            f"agentAction."
         )
 
     return {"nextStep": next_step, "data": data}

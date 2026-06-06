@@ -94,6 +94,7 @@ def workflow_tool(
         )
         action = result.get("action")
         done = bool(result.get("done"))
+        kind = result.get("kind")
 
         # Reset the closure's session_id as soon as the workflow finishes
         # so the next user request starts a fresh run. We do this even
@@ -111,10 +112,15 @@ def workflow_tool(
             return compose_workflow_empty_action(wf_name)
 
         # Frame the action as a directive, not a status update — the LLM
-        # has to perform it (tool call, question, message, skill, etc.)
-        # before the workflow can advance. Wording is shared with the
-        # out-of-process tool wrapper (Hermes) via cli_commands.
-        directive = compose_workflow_step_directive(wf_name, done=done)
+        # has to perform it (tool call, human_feedback question, message,
+        # skill, etc.) before the workflow can advance. A `question`-kind
+        # step forces a `human_feedback` call (which pauses the loop);
+        # other steps auto-advance via the agent loop's recall. Wording
+        # is shared with the out-of-process tool wrapper (Hermes) via
+        # cli_commands.
+        directive = compose_workflow_step_directive(
+            wf_name, done=done, kind=kind,
+        )
         return directive.as_plain_text(action)
 
     tool = LocalTool(

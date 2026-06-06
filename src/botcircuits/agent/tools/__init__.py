@@ -22,6 +22,7 @@ from botcircuits.agent.tools.builtins import (
     edit_file,
     glob_search,
     grep_search,
+    human_feedback,
     list_dir,
     memory,
     plan_and_confirm,
@@ -57,6 +58,7 @@ _BUILTINS = {
     "plan_and_confirm": plan_and_confirm,
     "build_workflow": build_workflow,
     "memory": memory,
+    "human_feedback": human_feedback,
 }
 
 

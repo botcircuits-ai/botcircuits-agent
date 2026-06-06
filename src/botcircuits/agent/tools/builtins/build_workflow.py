@@ -4,9 +4,9 @@ The model collects the user's intent in plain text (asking follow-up
 questions when scope is ambiguous), then calls this tool ONCE with a
 structured `workflow` payload describing the steps. The tool:
 
-  1. Validates the payload against the engine's supported shape (only
-     `start` and `agentAction` step types; branching lives on
-     agentAction via `conditions`).
+  1. Validates the payload against the engine's supported shape
+     (`start`, `agentAction`, and `question` step types; branching lives
+     on agentAction/question via `conditions`).
   2. Renders a confirmation block — "Workflow: <summary>\\nSteps: <list>"
      — and gates the write behind a single y/N answer (unless `auto`).
   3. Writes the workflow JSON to `$BOTCIRCUITS_WORKFLOWS_DIR` (or
@@ -29,13 +29,14 @@ file format so the LLM can reason about it directly:
       "summary":     "<short prose summary used in the confirm block>",
       "steps": {
         "<step_id>": {
-          "type":       "start" | "agentAction",
+          "type":       "start" | "agentAction" | "question",
           "next":       "<step_id>",          # optional, control flow
           "conditions": [                       # optional, control flow
             { "condition": "<NL>", "next": "<step_id>" }
           ],
           "settings": {
-            "action": "<natural-language step (agentAction only)>"
+            "action": "<NL step (agentAction); the question to ask the "
+                      "user (question)>"
           }
         }
       },
@@ -72,7 +73,12 @@ if TYPE_CHECKING:
 OnBuiltCallback = Callable[[dict], Union[None, Awaitable[None]]]
 
 
-SUPPORTED_STEP_TYPES = {"start", "agentAction"}
+SUPPORTED_STEP_TYPES = {"start", "agentAction", "question"}
+
+# Step types that carry a natural-language `settings.action` and may
+# branch via `conditions`. `question` behaves like `agentAction` for
+# authoring/validation; the engine routes it through `human_feedback`.
+_ACTION_STEP_TYPES = {"agentAction", "question"}
 
 WORKFLOWS_DIR_ENV = "BOTCIRCUITS_WORKFLOWS_DIR"
 DEFAULT_WORKFLOWS_DIR = ".botcircuits/workflows"
@@ -137,11 +143,11 @@ def _validate_workflow(workflow: dict) -> str | None:
         sc = step.get("settings") or {}
         if not isinstance(sc, dict):
             return f"step {sid!r}.settings must be an object"
-        if stype == "agentAction":
+        if stype in _ACTION_STEP_TYPES:
             action = sc.get("action")
             if not isinstance(action, str) or not action.strip():
                 return (
-                    f"step {sid!r} is an agentAction but has no `action` "
+                    f"step {sid!r} is a {stype} but has no `action` "
                     f"text in settings"
                 )
             for i, cond in enumerate(step.get("conditions") or []):
@@ -445,11 +451,14 @@ def build_workflow_tool(
             "if the result carries `index_error` or `index_note`, also "
             "tell the user to run `botcircuits-cli workflow build "
             "--name=<name>` to retry building.\n\n"
-            "Schema notes: the workflow engine supports only step types "
-            "'start' (no action, just a `next` pointer) and 'agentAction' "
-            "(the LLM performs `settings.action`). Branches live on "
-            "agentAction via `conditions` at the step ROOT (sibling of "
-            "`type`/`next`, NOT inside `settings`) — a list of "
+            "Schema notes: the workflow engine supports step types "
+            "'start' (no action, just a `next` pointer), 'agentAction' "
+            "(the LLM performs `settings.action`), and 'question' (the "
+            "LLM asks the user `settings.action` via the human_feedback "
+            "tool and waits for their reply — use this for any step that "
+            "needs input from the user). Branches live on "
+            "agentAction/question via `conditions` at the step ROOT "
+            "(sibling of `type`/`next`, NOT inside `settings`) — a list of "
             "{condition: <natural-language>, next: <step_id>}. The tool "
             "converts NL conditions to expressions automatically; do NOT "
             "write `expCondition`, `choices`, or `variables` yourself. "
@@ -471,10 +480,11 @@ def build_workflow_tool(
                         "Workflow definition. `name` (slug-safe: letters, "
                         "digits, _ and -) doubles as the JSON filename and "
                         "as the tool name surfaced to the LLM. `steps` "
-                        "keys are step ids. Each step has type 'start' "
-                        "or 'agentAction'. agentAction steps carry "
-                        "`settings.action` (natural-language "
-                        "instruction) and optionally a step-root "
+                        "keys are step ids. Each step has type 'start', "
+                        "'agentAction', or 'question'. agentAction/question "
+                        "steps carry `settings.action` (natural-language "
+                        "instruction, or the question to ask for a "
+                        "'question' step) and optionally a step-root "
                         "`conditions` (list of {condition, next} for "
                         "branching — sibling of `type`/`next`, NOT "
                         "inside `settings`)."
@@ -506,11 +516,12 @@ def build_workflow_tool(
                             "type": "object",
                             "description": (
                                 "Map of step_id -> step. Each step has "
-                                "`type` ('start' or 'agentAction'), an "
-                                "optional `next`, an optional `conditions` "
-                                "(branching), and a `settings`. agentAction "
-                                "steps need `settings.action`; branching "
-                                "uses a step-root `conditions` (sibling of "
+                                "`type` ('start', 'agentAction', or "
+                                "'question'), an optional `next`, an "
+                                "optional `conditions` (branching), and a "
+                                "`settings`. agentAction/question steps "
+                                "need `settings.action`; branching uses a "
+                                "step-root `conditions` (sibling of "
                                 "`type`/`next`) with entries shaped "
                                 "{condition: <NL>, next: <step_id>}."
                             ),

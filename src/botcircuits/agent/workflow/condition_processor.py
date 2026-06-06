@@ -42,21 +42,21 @@ def _dedupe_conditions(conditions: list[dict]) -> list[dict]:
 
 
 def _collect_condition_steps(flow: dict) -> list[dict]:
-    """Find every agentAction step that carries natural-language
+    """Find every agentAction/question step that carries natural-language
     `conditions` at the step root. Filters out empty entries and dedupes
     per step.
 
-    Only `start` and `agentAction` step types are supported; branching
-    lives inside `agentAction` (via `step.conditions` / `step.choices`)
-    and is evaluated on re-entry, after the LLM has had a chance to fill
-    variables.
+    Branching lives on `agentAction` and `question` steps (via
+    `step.conditions` / `step.choices`) and is evaluated on re-entry,
+    after the LLM has had a chance to fill variables (for a `question`
+    step, after the user's reply lands).
     """
     steps = flow.get("steps") or {}
     entries: list[dict] = []
     for step_id, step in steps.items():
         if not isinstance(step, dict):
             continue
-        if step.get("type") != "agentAction":
+        if step.get("type") not in ("agentAction", "question"):
             continue
         raw = step.get("conditions")
         if not isinstance(raw, list):

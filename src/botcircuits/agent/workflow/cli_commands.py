@@ -407,39 +407,59 @@ class WorkflowStepDirective:
     footer: str
 
     def as_plain_text(self, action: str) -> str:
-        """Render the in-process CLI form: header, body, step, footer."""
-        return f"{self.header}\n{self.body}\n\nStep: {action}\n\n{self.footer}"
+        """Render the in-process CLI form: header, body, step, footer.
+
+        The footer is optional (empty for non-terminal action steps now
+        that the loop auto-advances) — drop it cleanly when blank so the
+        text doesn't end in stray whitespace.
+        """
+        text = f"{self.header}\n{self.body}\n\nStep: {action}"
+        if self.footer:
+            text += f"\n\n{self.footer}"
+        return text
 
 
 def compose_workflow_step_directive(
-    wf_name: str, *, done: bool,
+    wf_name: str, *, done: bool, kind: str | None = None,
 ) -> WorkflowStepDirective:
     """Return the directive framing for one workflow step.
 
     `done=True` means the engine paused on the terminal step (final
     `action` to perform, no re-entry expected); `done=False` means there
-    are more steps and the LLM must re-call the workflow tool after
-    performing this one.
+    are more steps.
+
+    Note on advancing the workflow: the directive deliberately does NOT
+    instruct the model to re-call the workflow tool. The agent loop
+    auto-recalls it after the model finishes acting on this step (with
+    slot normalization), so the re-call no longer needs to be coaxed out
+    of the model in prose. The one exception is a `question` step
+    (`kind == "question"`): there the model MUST call `human_feedback` to
+    collect the user's reply, and the loop pauses on that call rather
+    than auto-advancing.
     """
     header = f"WORKFLOW STEP — '{wf_name}'"
+    if kind == "question":
+        body = (
+            "This step needs input from the user. Call the "
+            "'human_feedback' tool with the exact question to ask "
+            "(pass it as `question`). Do NOT answer on the user's "
+            "behalf and do NOT continue the workflow until they reply."
+        )
+        footer = (
+            "The agent pauses after the 'human_feedback' call; the "
+            "user's next message is their answer."
+        )
+        return WorkflowStepDirective(header=header, body=body, footer=footer)
+
     body = (
         "Execute the following step using whatever capability fits "
-        "(tool call, question to the user, plain reply, skill, etc.). "
-        "Do NOT describe the step as done unless you have actually "
-        "performed it."
+        "(tool call, plain reply, skill, etc.). Do NOT describe the "
+        "step as done unless you have actually performed it."
     )
     if done:
-        footer = (
-            f"This is the FINAL step of this workflow. After performing "
-            f"it, respond to the user with the result. Do NOT call the "
-            f"'{wf_name}' tool again for this request."
-        )
+        footer = "This is the FINAL step of this workflow."
     else:
-        footer = (
-            f"After performing this step, call the '{wf_name}' tool "
-            f"again (with any new inputs the step produced) to get the "
-            f"next workflow instruction."
-        )
+        footer = ""
     return WorkflowStepDirective(header=header, body=body, footer=footer)
 
 

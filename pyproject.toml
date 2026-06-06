@@ -40,3 +40,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/botcircuits"]
+
+[tool.pytest.ini_options]
+# src-layout: make the package importable during collection without a reinstall.
+pythonpath = ["src"]
+# The evals/ suite runs via `deepeval test run` (needs the deepeval extra); keep
+# it out of the default `pytest` collection so unit tests run standalone.
+testpaths = ["tests"]
