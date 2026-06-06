@@ -60,6 +60,8 @@ def print_help() -> None:
     out(C.dim("  /<skill-name>         run a filesystem skill directly"))
     out(C.dim('  /workflow add "<prompt>" [--name <wf>]'))
     out(C.dim('                        author a new workflow'))
+    out(C.dim('  /workflow add --file <path.md> [--name <wf>]'))
+    out(C.dim('                        author a new workflow from a prompt file'))
     out(C.dim('  /workflow edit "<prompt>" --name <wf>'))
     out(C.dim('                        edit existing workflow <wf> via build_workflow'))
     out(C.dim('  /workflow run --name <wf> [--initial-args \'{"k":"v"}\']'))

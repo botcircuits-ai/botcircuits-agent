@@ -1,6 +1,7 @@
 {
   "provider": "anthropic",
   "model": "claude-opus-4-7",
+  "mode": "native",
   "stream": true,
   "max_tokens": 4096,
   "max_steps": 10,

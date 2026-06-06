@@ -32,9 +32,15 @@ class GeminiProvider(LLMProvider):
                 if b["type"] == "text":
                     parts.append({"text": b["text"]})
                 elif b["type"] == "tool_call":
-                    parts.append({"function_call": {
+                    part: dict = {"function_call": {
                         "name": b["name"], "args": b["arguments"]
-                    }})
+                    }}
+                    # Echo the thinking-model signature back, or Gemini rejects
+                    # the request with 400 "missing a thought_signature".
+                    sig = b.get("thought_signature")
+                    if sig is not None:
+                        part["thought_signature"] = sig
+                    parts.append(part)
                 elif b["type"] == "tool_result":
                     # Gemini pairs function_response by name, not id.
                     parts.append({"function_response": {
@@ -95,7 +101,11 @@ class GeminiProvider(LLMProvider):
                     if fc and fc.name in local_names:
                         tool_calls.append(ToolCall(
                             id=str(uuid.uuid4()), name=fc.name,
-                            arguments=dict(fc.args) if fc.args else {}))
+                            arguments=dict(fc.args) if fc.args else {},
+                            # Preserve the thinking-model signature so it can be
+                            # replayed on the next turn (Gemini 400s without it).
+                            thought_signature=getattr(
+                                part, "thought_signature", None)))
         stop_reason = "tool_use" if tool_calls else "end_turn"
         return LLMResponse(text="".join(text_parts).strip(),
                            tool_calls=tool_calls, stop_reason=stop_reason,

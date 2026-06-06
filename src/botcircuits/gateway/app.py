@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI):
         mcp_servers=cfg.mcp_servers,
         max_tokens=cfg.max_tokens,
         max_steps=cfg.max_steps,
+        mode=cfg.mode,
     )
     await agent.start()
     app.state.agent = agent

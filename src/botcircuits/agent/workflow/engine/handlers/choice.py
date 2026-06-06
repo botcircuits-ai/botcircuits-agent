@@ -13,7 +13,11 @@ surrounding agent loop is where any LLM-driven recovery happens.
 
 from __future__ import annotations
 
-from botcircuits.agent.workflow.engine.utils import coerce_for_compare, fill_text_with_slots
+from botcircuits.agent.workflow.engine.utils import (
+    coerce_for_compare,
+    fill_text_with_slots,
+    to_number,
+)
 
 
 def evaluate_choices(
@@ -66,30 +70,27 @@ def _evaluate_operator(condition: dict, variable_value, session_context: dict) -
         fill_text_with_slots(raw_value, session_context)
         if isinstance(raw_value, str) else raw_value
     )
-    # Coerce when comparing typed variable values against string literals
-    # (`order_total > '500'`) so the indexer's typed output and authored
-    # string-typed values both work.
-    if (operator in ("greater than", "greater than or equal",
-                     "less than", "less than or equal")
-            and isinstance(check_value, str)
-            and not isinstance(variable_value, str)):
-        try:
-            check_value = type(variable_value)(check_value)
-        except (TypeError, ValueError):
-            pass
+    # Ordered comparisons coerce *both* sides to a number so an unfilled slot
+    # (`None`), a string slot (`"640"`), or an indexer-typed value all compare
+    # safely. If either side isn't numeric the condition doesn't match and the
+    # engine falls through to the default branch — never raising TypeError.
+    if operator in ("greater than", "greater than or equal",
+                    "less than", "less than or equal"):
+        a, b = to_number(variable_value), to_number(check_value)
+        if a is None or b is None:
+            return False
+        if operator == "greater than":
+            return a > b
+        if operator == "greater than or equal":
+            return a >= b
+        if operator == "less than":
+            return a < b
+        return a <= b
 
     if operator == "is":
         return check_value == variable_value
     if operator == "is not":
         return check_value != variable_value
-    if operator == "greater than":
-        return variable_value > check_value
-    if operator == "greater than or equal":
-        return variable_value >= check_value
-    if operator == "less than":
-        return variable_value < check_value
-    if operator == "less than or equal":
-        return variable_value <= check_value
     if operator == "contains":
         return isinstance(variable_value, str) and check_value in variable_value
     if operator == "not contains":
