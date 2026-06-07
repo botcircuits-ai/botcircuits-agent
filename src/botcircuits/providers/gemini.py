@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 from botcircuits.types import LLMResponse, Message, ToolCall
-from botcircuits.providers.base import LLMProvider
+from botcircuits.providers.base import DEFAULT_SEED, DEFAULT_TEMPERATURE, LLMProvider
 
 
 class GeminiProvider(LLMProvider):
@@ -83,6 +83,8 @@ class GeminiProvider(LLMProvider):
             system_instruction=system or None,
             tools=tool_list or None,
             max_output_tokens=max_tokens,
+            temperature=DEFAULT_TEMPERATURE,
+            seed=DEFAULT_SEED,
             # Auto function calling OFF so all tool dispatch flows through
             # the outer agent loop and history stays consistent.
             automatic_function_calling=gt.AutomaticFunctionCallingConfig(disable=True),

@@ -10,7 +10,7 @@ import json
 from typing import Any
 
 from botcircuits.types import LLMResponse, Message, ToolCall
-from botcircuits.providers.base import LLMProvider
+from botcircuits.providers.base import DEFAULT_TEMPERATURE, LLMProvider
 
 
 class OpenAIProvider(LLMProvider):
@@ -94,6 +94,7 @@ class OpenAIProvider(LLMProvider):
             "model": self.model,
             "input": self._msgs_to_input(system, messages),
             "max_output_tokens": max_tokens,
+            "temperature": DEFAULT_TEMPERATURE,
         }
         if api_tools:
             kwargs["tools"] = api_tools

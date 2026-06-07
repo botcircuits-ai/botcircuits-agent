@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from botcircuits.types import LLMResponse, Message, ToolCall
-from botcircuits.providers.base import LLMProvider
+from botcircuits.providers.base import DEFAULT_TEMPERATURE, LLMProvider
 
 
 class AnthropicProvider(LLMProvider):
@@ -46,6 +46,7 @@ class AnthropicProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model, "max_tokens": max_tokens, "system": system,
             "messages": [self._msg_to_api(m) for m in messages],
+            "temperature": DEFAULT_TEMPERATURE,
         }
         if hosted_mcp:
             betas.append("mcp-client-2025-11-20")

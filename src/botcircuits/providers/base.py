@@ -15,6 +15,13 @@ from botcircuits.agent.skill import SkillSpec
 from botcircuits.agent.tools import LocalTool
 from botcircuits.types import LLMResponse, Message, ProviderStreamEvent
 
+#: Greedy decoding for reproducibility. botcircuits' core claim is run-to-run
+#: predictability, so we pin temperature to 0 on every provider.
+DEFAULT_TEMPERATURE: float = 0.0
+
+#: Fixed sampling seed for providers that accept one (currently only Gemini
+DEFAULT_SEED: int = 0
+
 
 class LLMProvider(ABC):
     name: str = "base"
