@@ -199,13 +199,23 @@ What it does:
 
 **Why same provider as the agent.** The user already picked an `LLMProvider` for chat; reusing it for indexing means one model behavior, one set of credentials, one place to swap providers. The alternative — a hardcoded model just for indexing — would mean a separate dependency, a separate API key, and a separate place where output quality could drift.
 
-#### 8.6.4 Variable normalization on re-entry — A + B
+#### 8.6.4 Variable normalization on re-entry — resolver + A + B
 
-When a workflow tool is re-entered after an `agentAction` with conditions — today the agent loop's auto-recall does this (§5.4), with empty args — the values needed for the branch live in the surrounding transcript rather than in the call's args (`order_total="500"`, `order_status="has been delivered"`), and even when present rarely match the choice expressions exactly. [agent/workflow/local.py](../../src/botcircuits/agent/workflow/local.py) runs a two-layer normalization pipeline before merging values into slots and handing control to the executor.
+When a workflow tool is re-entered after an `agentAction` with conditions — today the agent loop's auto-recall does this (§5.4), with empty args — the values needed for the branch live in the surrounding transcript rather than in the call's args (`order_total="500"`, `order_status="has been delivered"`), and even when present rarely match the choice expressions exactly. [agent/workflow/local.py](../../src/botcircuits/agent/workflow/local.py) runs a normalization pipeline before merging values into slots and handing control to the executor: a deterministic **slot resolver** first, then **Layer B** (LLM extraction) only for what the resolver couldn't satisfy, then **Layer A** (type coercion) over the merged result.
 
-**Gate.** Both layers run *only* when **all three** are true: `saved_session.pendingBranch` is set (the prior turn paused on a branching agentAction), the state has any variables to coerce, and (for Layer B) a `provider` was wired in. Initial calls and re-entries into non-branching actions skip the whole pipeline — they pay zero extra LLM calls.
+**Gate.** The pipeline runs *only* when `saved_session.pendingBranch` is set (the prior turn paused on a branching agentAction) and the state has variables to resolve; Layer B additionally needs a `provider` wired in. Initial calls and re-entries into non-branching actions skip the whole pipeline — they pay zero extra LLM calls.
 
-**Layer B — `variable_normalizer.normalize(...)`.** [agent/workflow/variable_normalizer.py](../../src/botcircuits/agent/workflow/variable_normalizer.py). One `provider.complete(...)` round-trip with `tools=[]`, `hosted_mcp=[]`, `skills=[]`. Inputs:
+**Slot resolver — `slot_resolver.resolve_slots(...)`.** [agent/workflow/slot_resolver.py](../../src/botcircuits/agent/workflow/slot_resolver.py). Deterministic, zero-LLM resolution that runs before Layer B. For each branch variable, the first hit wins:
+
+1. **Raw args** — the model passed the variable explicitly and it coerces to the declared `dataType`.
+2. **Choice-value match** — the pending step's `choices[].expressionList` carries the literal values the branch compares against (`is`, `contains`, `starts with`, `ends with`). If exactly one of them appears (case-insensitive, token-boundary) in the last user message or raw args, that authored value is assigned — with its authored casing so the engine's `is` comparison matches. Values with `{slot}` placeholders are skipped.
+3. **Typed extraction** — a number-typed variable resolves when the user's reply contains exactly one standalone number (digits inside identifiers like `sys_10001` don't count); a boolean-typed one when the reply (or its first word) is an unambiguous yes/no token.
+4. **Question verbatim reply** — when the pending step is a `question` referencing a single string variable with no authored choice literals (the branch only checks emptiness/containment), the user's reply *is* the slot value, verbatim.
+5. **Saved slot** — the variable already holds a coercible value from an earlier turn. Deliberately lowest priority: sources 1–4 read the fresh turn, so a new answer beats a stale one when a loop re-visits the same branching step.
+
+The resolver never guesses — ambiguity (two choice literals matched, two numbers in the reply) means "unresolved". Each resolution logs `[workflow] slot resolver: <name>=<value> (<source>)` to stderr. Variables it can't satisfy are handed to Layer B; **when it satisfies all of them, the LLM call is skipped entirely** — which is both the token saving and the determinism guarantee: a value resolved here is the same value on every run.
+
+**Layer B — `variable_normalizer.normalize(...)`.** [agent/workflow/variable_normalizer.py](../../src/botcircuits/agent/workflow/variable_normalizer.py). One `provider.complete(...)` round-trip with `tools=[]`, `hosted_mcp=[]`, `skills=[]`, restricted to the variables the resolver left unresolved (its allow-list means it can never override a deterministically resolved value). Inputs:
 
 - The **filtered** variable schema: `variables_for_step(flow, pending_step_id)` walks the step's `choices[].expressionList[].variable` and returns only the matching entries from `flow.variables`. Listing irrelevant variables wastes tokens and tempts hallucination.
 - The raw tool args, the action text, and `last_assistant_message` (provided by the agent loop via the tool's `context`).
@@ -216,7 +226,7 @@ The model returns `{normalized: {variableName: value, ...}}`. Three post-process
 2. **Hallucination guard.** Each value must appear (case-insensitive substring) somewhere in the source context (args JSON + action text + last assistant message). Booleans always pass (trivially present in any text); numbers match both as-typed (`500`) and stripped (`500.0` → `500`); empty strings pass (so `is empty` checks fire correctly). Values that don't appear get dropped with a stderr warning.
 3. **Failure tolerance.** Any provider error, malformed JSON, or schema mismatch returns `{}` and logs a single stderr line. The workflow never aborts because of B; it degrades to "raw args + Layer A."
 
-**Layer A — `_coerce_variables(...)`.** [agent/workflow/local.py](../../src/botcircuits/agent/workflow/local.py). Deterministic type coercion against `flow.variables[].dataType`. Always runs when the workflow has an indexed schema, regardless of whether B ran. Behavior:
+**Layer A — `_coerce_variables(...)`.** [agent/workflow/local.py](../../src/botcircuits/agent/workflow/local.py) (the scalar coercers it uses live in `slot_resolver.py`, shared with the resolver — one source of truth for type coercion). Deterministic type coercion against `flow.variables[].dataType`. Always runs when the workflow has an indexed schema, regardless of whether B ran. Behavior:
 
 | dataType | Accepts | Produces | Drops |
 |---|---|---|---|
@@ -332,6 +342,8 @@ At most one workflow runs at a time today (the loop picks `names[0]`); the data 
 **Why no interruption handling.** There is no end-user inside the engine — the LLM is the caller, and it controls when to re-enter the workflow via the system-prompt reminder. Interruption is just "the LLM chose to call a different tool"; no plumbing needed.
 
 **A + B, not A or B.** Type coercion alone (A) doesn't fix semantic drift (`"shipped already"` → `"shipped"`). LLM normalization alone (B) is non-deterministic and can produce values that fail the runtime's typed comparisons (`"500"` vs `500`). Stacking them means B handles meaning and A guarantees the type contract before the engine sees the slots. If B fails (provider error, bad JSON), the workflow still has A as a guaranteed minimum, plus the executor's default-branch fallthrough — never aborts.
+
+**Deterministic resolver before B, not instead of B.** Most branch re-entries don't need interpretation at all — the answer is an authored choice literal sitting in the user's reply, a lone number, a yes/no, or a value already collected. Resolving those in code makes the common path free (no extra LLM round-trip) and reproducible (same input, same slots, same branch). B remains the fallback for genuinely semantic answers (`"the bigger one"` → `"large"`), and because it only sees the unresolved subset, its prompt shrinks too. The resolver's no-guessing rule (ambiguity → unresolved) is what keeps this safe: it never trades correctness for determinism — it just refuses to answer and lets B arbitrate.
 
 **CLI wiring.** [cli/app.py](../../src/botcircuits/cli/app.py) calls `register_workflows(registry, provider=provider, normalize_enabled=cfg.workflow["normalize"])` after `default_registry()` runs (so built-ins are present and collisions are detectable). `LocalWorkflowError` (raised when a workflow file is malformed) is caught and reported as `[workflow] ...` with exit code 2 — same pattern as the tools-config error path. The `workflow build` subcommand reuses the same provider construction via `load_cli_config(args)` + `make_provider(...)`, so author-time inference and runtime normalization always run on the same model.
 

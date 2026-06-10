@@ -40,6 +40,13 @@ from typing import Any
 
 from botcircuits.providers.base import LLMProvider
 from botcircuits.agent.workflow.engine import run_flow
+from botcircuits.agent.workflow.slot_resolver import (
+    Missing as _Missing,
+    coerce_boolean as _coerce_boolean,
+    coerce_number as _coerce_number,
+    coerce_string as _coerce_string,
+    resolve_slots,
+)
 from botcircuits.agent.workflow.variable_normalizer import normalize as normalize_variables
 from botcircuits.agent.workflow.variable_normalizer import variables_for_step
 
@@ -54,13 +61,6 @@ BUILD_DIR_NAME = ".build"
 # Identifier regex for workflow names. Matches OpenAI's tool-name pattern,
 # which is the strictest tool-naming surface the agent talks to.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-
-# Strings that coerce to False for boolean-typed variables. Anything truthy
-# outside this set is treated as `True`; anything ambiguous (e.g. "maybe")
-# is dropped by `_coerce_variables` rather than guessed.
-_FALSY_STRINGS = {"false", "no", "0", "off", "", "null", "none"}
-_TRUTHY_STRINGS = {"true", "yes", "1", "on"}
 
 
 # In-process saved-session store, keyed by session_id. A workflow pauses
@@ -86,63 +86,9 @@ def _resolve_build_dir() -> Path:
 
 # ---------------------------------------------------------------------------
 # Layer A — deterministic type coercion against stm.variables[].dataType
+# (scalar coercers live in slot_resolver.py — single source of truth shared
+# with the deterministic slot resolver)
 # ---------------------------------------------------------------------------
-
-
-def _coerce_number(value: Any) -> Any:
-    """Best-effort number coercion. Returns the original sentinel `_MISSING`
-    when the value can't be turned into a number — caller treats that as
-    'drop this slot'."""
-    if isinstance(value, bool):
-        # bool is a subclass of int in Python — treat it as a coercion
-        # failure for number-typed variables so we don't accept `True` as 1.
-        return _MISSING
-    if isinstance(value, (int, float)):
-        return value
-    if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return _MISSING
-        try:
-            if "." in s or "e" in s.lower():
-                return float(s)
-            return int(s)
-        except ValueError:
-            return _MISSING
-    return _MISSING
-
-
-def _coerce_boolean(value: Any) -> Any:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in _TRUTHY_STRINGS:
-            return True
-        if s in _FALSY_STRINGS:
-            return False
-        return _MISSING
-    return _MISSING
-
-
-def _coerce_string(value: Any) -> Any:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value).strip()
-
-
-class _Missing:
-    """Sentinel marker for 'coercion failed — drop this slot'."""
-    __slots__ = ()
-
-
-_MISSING = _Missing()
 
 
 def _coerce_variables(values: dict, schema: list[dict]) -> dict:
@@ -324,17 +270,21 @@ async def run_workflow(
     `workflow_name` is the slug-safe identifier of the workflow record
     (its `name` field on disk, doubling as filename and tool name).
 
-    Variable normalization (A + B) runs only on RE-ENTRY into a state
-    that's marked as a `pendingBranch` (i.e. the prior turn paused on an
+    Variable normalization runs only on RE-ENTRY into a state that's
+    marked as a `pendingBranch` (i.e. the prior turn paused on an
     agentAction with conditions/choices). Initial calls and re-entries
     into non-branching states skip normalization entirely.
 
-      - Layer B (semantic LLM extraction) runs when `provider` is given
-        and `normalize_enabled` is True. Failures fall through silently
-        to raw args.
+      - The deterministic slot resolver (`slot_resolver.resolve_slots`)
+        runs first and satisfies what it can from raw args, the step's
+        authored choice values, the user's last reply, and saved slots.
+      - Layer B (semantic LLM extraction) runs when `provider` is given,
+        `normalize_enabled` is True, and the resolver left variables
+        unresolved — it sees only those leftovers. Failures fall through
+        silently to raw args.
       - Layer A (deterministic type coercion) always runs against any
-        variables the workflow has indexed. It runs on B's output when B
-        ran, otherwise on the raw args.
+        variables the workflow has indexed. It runs on the resolver's
+        and B's merged output.
     """
     record = _load_workflow_record(workflow_name)
 
@@ -358,19 +308,41 @@ async def run_workflow(
     if pending_step_id:
         relevant_variables = variables_for_step(flow, pending_step_id)
 
-        # Layer B — semantic LLM normalization (optional).
-        if provider is not None and normalize_enabled and relevant_variables:
+        # Deterministic slot resolution — satisfy as many branch
+        # variables as possible without an LLM (raw args, choice-value
+        # match, typed extraction, question verbatim reply, saved
+        # slots). Only the leftovers go to Layer B; when nothing is
+        # left, the LLM call is skipped entirely.
+        unresolved = relevant_variables
+        if relevant_variables:
+            saved_slots = (
+                (saved_session or {}).get("slots", {}).get(workflow_name, {})
+            )
+            resolved, unresolved = resolve_slots(
+                flow=flow,
+                step_id=pending_step_id,
+                variables=relevant_variables,
+                raw_args=incoming_args,
+                saved_slots=saved_slots,
+                last_user_message=last_user_message,
+            )
+            if resolved:
+                incoming_args = {**incoming_args, **resolved}
+
+        # Layer B — semantic LLM normalization (optional), only for
+        # variables the deterministic resolver could not satisfy. Its
+        # allow-list is restricted to `unresolved`, so it can never
+        # override a deterministically resolved value.
+        if provider is not None and normalize_enabled and unresolved:
             action_text = _action_text_for_step(flow, pending_step_id)
             extracted = await normalize_variables(
                 provider=provider,
-                variables=relevant_variables,
+                variables=unresolved,
                 raw_args=incoming_args,
                 action_text=action_text,
                 last_assistant_message=last_assistant_message,
                 last_user_message=last_user_message,
             )
-            # Merge B's extractions over raw args — B values win since
-            # they were specifically picked to satisfy the branch schema.
             if extracted:
                 incoming_args = {**incoming_args, **extracted}
 

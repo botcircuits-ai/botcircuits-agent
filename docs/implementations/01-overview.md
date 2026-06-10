@@ -65,7 +65,8 @@ src/botcircuits/
 │   │                        #   register_workflows / active_workflow_names
 │   ├── local.py             #   discover *.json, drive engine, A-layer coercion
 │   ├── condition_processor.py  # `workflow build` — NL conditions → choices + variables
-│   ├── variable_normalizer.py  # B-layer LLM extraction on re-entry
+│   ├── slot_resolver.py     #   deterministic slot resolution (pre-B) + scalar coercers
+│   ├── variable_normalizer.py  # B-layer LLM extraction on re-entry (unresolved vars only)
 │   └── engine/              #   trimmed port of botcircuits-runtime-handler STM
 │       ├── executor.py      #     state-machine loop + pendingBranch resolver
 │       ├── state.py         #     WorkflowStateContext (saved session, slots)
