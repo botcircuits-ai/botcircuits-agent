@@ -226,6 +226,11 @@ it from re-calling the workflow tool, and the loop's recall carries nothing.
 
 ## 4. Option 2 — let the main loop's tool call carry the slots
 
+> **Status: implemented.** `run_workflow` returns `branch_variables`, `workflow_tool`
+> mirrors them onto the tool's `input_schema` + `_workflow_state`, the step directive
+> and `[Active workflow]` reminder ask for the re-call, and auto-recall is the fallback.
+> Prose version: [implementation guide §8.6.12](../implementations/05-local-tools-and-workflows.md).
+
 The fix inverts the carrier: when a branching step is pending, the **model's own tool
 call in the main loop** re-enters the workflow and carries the slot values as plain
 tool-call arguments. The workflow tool tells it which variables to bring (schema +

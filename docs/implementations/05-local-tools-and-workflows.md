@@ -201,7 +201,7 @@ What it does:
 
 #### 8.6.4 Variable normalization on re-entry — resolver + A + B
 
-When a workflow tool is re-entered after an `agentAction` with conditions — today the agent loop's auto-recall does this (§5.4), with empty args — the values needed for the branch live in the surrounding transcript rather than in the call's args (`order_total="500"`, `order_status="has been delivered"`), and even when present rarely match the choice expressions exactly. [agent/workflow/local.py](../../src/botcircuits/agent/workflow/local.py) runs a normalization pipeline before merging values into slots and handing control to the executor: a deterministic **slot resolver** first, then **Layer B** (LLM extraction) only for what the resolver couldn't satisfy, then **Layer A** (type coercion) over the merged result.
+When a workflow tool is re-entered after an `agentAction` with conditions — preferably by the model's own re-call carrying the branch variables as args (see §8.6.12), falling back to the agent loop's empty-args auto-recall (§5.4) — any values not in the call's args live in the surrounding transcript (`order_total="500"`, `order_status="has been delivered"`), and even when present rarely match the choice expressions exactly. [agent/workflow/local.py](../../src/botcircuits/agent/workflow/local.py) runs a normalization pipeline before merging values into slots and handing control to the executor: a deterministic **slot resolver** first, then **Layer B** (LLM extraction) only for what the resolver couldn't satisfy, then **Layer A** (type coercion) over the merged result.
 
 **Gate.** The pipeline runs *only* when `saved_session.pendingBranch` is set (the prior turn paused on a branching agentAction) and the state has variables to resolve; Layer B additionally needs a `provider` wired in. Initial calls and re-entries into non-branching actions skip the whole pipeline — they pay zero extra LLM calls.
 
@@ -283,7 +283,7 @@ async def _handler(args: dict, context: dict | None = None) -> str:
 
 The first call passes `session_id=None`; `run_workflow` mints a uuid and `_SESSIONS` keys the workflow conversation on it. Subsequent calls re-enter the same `session_id` so the engine advances the same workflow instance instead of starting a new one. The state clears when the workflow ends so the *next* invocation starts fresh.
 
-**The directive no longer asks the model to re-call the tool.** `compose_workflow_step_directive` ([agent/workflow/cli_commands.py](../../src/botcircuits/agent/workflow/cli_commands.py)) frames the step as something to *perform*, full stop — there's no "call '<name>' again" footer anymore, because the agent loop auto-recalls the workflow tool once the model stops issuing tool calls (§5.4). The one exception is a `question`-kind step: there the directive tells the model to call `human_feedback` (which pauses the loop) rather than answer on the user's behalf. The wording lives in `cli_commands` so the in-process CLI wrapper here and the out-of-process Hermes wrapper render identical text; `kind` defaults to `None` so Hermes callers that don't pass it get the plain action framing.
+**The directive asks for a re-call only when a branch is pending.** `compose_workflow_step_directive` ([agent/workflow/cli_commands.py](../../src/botcircuits/agent/workflow/cli_commands.py)) frames a plain step as something to *perform*, full stop — no "call '<name>' again" footer, because the agent loop auto-recalls the workflow tool once the model stops issuing tool calls (§5.4). Two exceptions: a `question`-kind step tells the model to call `human_feedback` (which pauses the loop) rather than answer on the user's behalf; and a step with `branch_variables` (the engine paused on a branching step — §8.6.12) gets a footer asking the model to re-call the tool with the values it observed for those variables once the step is done. The wording lives in `cli_commands` so the in-process CLI wrapper here and the out-of-process Hermes wrapper render identical text; `kind` and `branch_variables` default to `None` so Hermes callers that don't pass them get the plain action framing.
 
 `tool._workflow_state` is exposed (assigned post-construction) so the agent loop can introspect mid-run workflows without touching the closure directly — see `active_workflow_names()` above.
 
@@ -315,7 +315,7 @@ results = await asyncio.gather(*[
 
 #### 8.6.8 System-prompt re-entry reminder
 
-The model now advances workflows by *not* acting (the loop auto-recalls — §5.4), so the reminder's job flipped: it must keep the model from re-calling the workflow tool itself, which would double-advance. [agent/core.py:_with_workflow_reminder](../../src/botcircuits/agent/core.py) appends a `[Active workflow]` block to the system prompt **for every provider call** while any workflow tool reports `session_id != None`:
+The model advances workflows by *not* acting (the loop auto-recalls — §5.4) — except on a branching step, where the model is asked to re-call the tool itself, carrying the branch variables (§8.6.12). [agent/core.py:_with_workflow_reminder](../../src/botcircuits/agent/core.py) appends a `[Active workflow]` block to the system prompt **for every provider call** while any workflow tool reports `session_id != None`. On a non-branching step it keeps the model from re-calling (which would double-advance):
 
 ```
 [Active workflow] The workflow tool '<name>' is mid-execution. Perform
@@ -323,6 +323,17 @@ ONLY the action of the current step (call a tool, send a reply, or call
 'human_feedback' if the step asks the user a question). Do NOT call
 '<name>' yourself — the next step is requested for you automatically
 once you finish acting.
+```
+
+When the active workflow's `_workflow_state` carries non-empty `branch_variables` (read via `workflow_branch_variables(reg, name)`), the block flips to the re-call-with-args form instead:
+
+```
+[Active workflow] The workflow tool '<name>' is mid-execution on a
+branching step. FIRST perform the action of the current step (...).
+Once the step is genuinely complete, call '<name>' passing the values
+you observed for these arguments — they decide the next step. Omit any
+you don't actually have; never invent values:
+- order_status (string): one of: pending | shipped | delivered
 ```
 
 The reminder is computed per-call (not stored on `convo.system`) because the active set can change between turns — a workflow that just finished should stop nagging the model on the next turn. Computing it inline costs one dict lookup per provider call; cheap, and the alternative (caching) would have to be invalidated on every workflow state change.
@@ -380,10 +391,24 @@ Two changes moved workflow *advancement* out of the model's hands and gave quest
 
 **Pause mechanism — terminal turn.** After the loop runs a turn's tool calls, `_human_feedback_pause(tool_calls, results)` ([agent/core.py](../../src/botcircuits/agent/core.py)) scans for a `human_feedback` call; if one ran, it pulls the question (from the JSON result, falling back to the call's `question` arg) and the loop ends the turn, returning the question as the assistant's reply. This is a *terminal-turn* pause: control returns to the caller (`chat()` / REPL / gateway) exactly as a normal end-of-turn would, and the user's next message is their answer. We chose this over a handler that blocks reading stdin mid-loop because the blocking design couples the tool to the CLI and breaks the gateway and streaming `done`-event contract; a terminal turn fits all three callers with no new control flow.
 
-**Auto-recall — advancement without coaxing.** Previously the workflow tool's result string and the `[Active workflow]` reminder both *told the model to re-call the tool* to advance, and the model would sometimes forget. Now: when a turn ends with no model-issued tool calls but `active_workflow_names(reg)` is non-empty, `_auto_recall_calls(reg)` synthesizes one workflow tool call per active workflow (empty args, ids prefixed `wf-autorecall-`), the loop runs them like any other tool call, and the returned next-step directive feeds the next provider call. The model therefore only ever *performs* steps; the loop owns "fetch the next one." This is gated on `enable_workflows`, so the eval framework's no-workflow baseline is unaffected, and on there being an active workflow, so an ordinary empty-tool turn with no workflow still terminates normally.
+**Auto-recall — advancement without coaxing.** Previously the workflow tool's result string and the `[Active workflow]` reminder both *told the model to re-call the tool* to advance, and the model would sometimes forget. Now: when a turn ends with no model-issued tool calls but `active_workflow_names(reg)` is non-empty, `_auto_recall_calls(reg)` synthesizes one workflow tool call per active workflow (empty args, ids prefixed `wf-autorecall-`), the loop runs them like any other tool call, and the returned next-step directive feeds the next provider call. The model therefore only ever *performs* steps; the loop owns "fetch the next one." This is gated on `enable_workflows`, so the eval framework's no-workflow baseline is unaffected, and on there being an active workflow, so an ordinary empty-tool turn with no workflow still terminates normally. For branching steps auto-recall is the *fallback*: the preferred path is the model's own re-call carrying the branch variables (§8.6.12), which — being a model-issued tool call — suppresses the auto-recall for that turn by construction.
 
 **Interaction.** A `human_feedback` pause deliberately runs *before* any auto-recall would (it's checked after the tool results land, and it `return`s), so a `question` step doesn't advance past an unanswered question. On the user's next turn, the model acts (often just acknowledging the answer), produces no tool calls, and *then* auto-recall fires to pull the step after the question — at which point Layer A/B normalization extracts the answer's values from the recent transcript exactly as for any other re-entry.
 
 **Why the engine `question` step and the free-form tool coexist.** A workflow author marks a step `type: "question"` to *force* the model to ask (the directive instructs a `human_feedback` call); the same tool is also on the model's catalog for moments it judges on its own that it needs the user. Both paths land on the identical pause, so there's one mechanism to reason about regardless of who decided to ask.
+
+#### 8.6.12 Branching steps — the model's re-call carries the slots
+
+Diagrams and full rationale: [docs/design/tool-system-llm-flow.md](../design/tool-system-llm-flow.md).
+
+The empty-args auto-recall left the re-entry pipeline blind to values that never appear in the 2KB last-text snapshot — above all values that surfaced in `tool_result` blocks (the model looked an order up via an API tool; the status lives in the tool's output, not in anyone's prose). The resolver's highest-priority source (raw args) could never fire because auto-recall always passed `{}`, so branching leaned on Layer B guessing over an incomplete snapshot.
+
+The fix inverts the carrier: when the engine pauses on a branching step, the **model's own tool call in the main loop** re-enters the workflow with the slot values as ordinary tool-call arguments. Moving parts:
+
+- **`run_workflow` surfaces `branch_variables`** ([agent/workflow/local.py](../../src/botcircuits/agent/workflow/local.py)): when the paused session carries a `pendingBranch`, the result includes `variables_for_step(flow, pending.stepId)` — the same filtered schema Layer B uses.
+- **`workflow_tool` mirrors them onto the tool surface** ([agent/workflow/__init__.py](../../src/botcircuits/agent/workflow/__init__.py)): the handler stores them in `_workflow_state["branch_variables"]` and rewrites the tool's `input_schema` so providers advertise the variables as optional properties (typed via `dataType` → JSON-schema type). Non-branching pauses and terminal turns reset the schema to empty. ReAct mode picks the schema up automatically because the preamble is re-rendered per call.
+- **Directive + reminder ask for the re-call** (§8.6.6, §8.6.8): the step directive's footer and the `[Active workflow]` block list the variables (`render_branch_variable_lines`) and instruct: perform the step first, then call `<wf>` with the observed values, omitting anything not actually observed.
+- **Auto-recall demoted to fallback** (§8.6.11): unchanged code — it only fires on turns with no model-issued tool calls, so a turn containing the model's re-call never double-advances, and a model that forgets degrades to the old resolver→B→A path, never to a stall.
+- **No pipeline change**: model-supplied args flow through the existing `raw_args` path, hit the slot resolver's source #1, and get type-coerced by Layer A. Layer B becomes the rare semantic fallback instead of the routine crutch.
 
 ---

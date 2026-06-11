@@ -419,8 +419,24 @@ class WorkflowStepDirective:
         return text
 
 
+def render_branch_variable_lines(branch_variables: list[dict]) -> str:
+    """Render a pending branch's variables as `- name (type): desc` lines
+    for the re-call instruction in the step directive / loop reminder."""
+    lines: list[str] = []
+    for v in branch_variables:
+        name = v.get("variableName")
+        if not isinstance(name, str) or not name:
+            continue
+        dtype = v.get("dataType") or "string"
+        desc = v.get("description") or ""
+        suffix = f": {desc}" if desc else ""
+        lines.append(f"- {name} ({dtype}){suffix}")
+    return "\n".join(lines)
+
+
 def compose_workflow_step_directive(
     wf_name: str, *, done: bool, kind: str | None = None,
+    branch_variables: list[dict] | None = None,
 ) -> WorkflowStepDirective:
     """Return the directive framing for one workflow step.
 
@@ -428,16 +444,23 @@ def compose_workflow_step_directive(
     `action` to perform, no re-entry expected); `done=False` means there
     are more steps.
 
-    Note on advancing the workflow: the directive deliberately does NOT
-    instruct the model to re-call the workflow tool. The agent loop
-    auto-recalls it after the model finishes acting on this step (with
-    slot normalization), so the re-call no longer needs to be coaxed out
-    of the model in prose. The one exception is a `question` step
-    (`kind == "question"`): there the model MUST call `human_feedback` to
-    collect the user's reply, and the loop pauses on that call rather
-    than auto-advancing.
+    Note on advancing the workflow: for a plain step the directive does
+    NOT instruct the model to re-call the workflow tool — the agent loop
+    auto-recalls it after the model finishes acting (with slot
+    normalization). Two exceptions:
+
+      - `kind == "question"`: the model MUST call `human_feedback` to
+        collect the user's reply, and the loop pauses on that call
+        rather than auto-advancing.
+      - `branch_variables` non-empty (the step branches on those
+        variables): the directive asks the model to re-call the
+        workflow tool with the observed values once the step is done,
+        so the slots ride the main loop's tool call instead of being
+        re-derived from the transcript. The loop's empty-args
+        auto-recall remains the fallback when the model doesn't.
     """
     header = f"WORKFLOW STEP — '{wf_name}'"
+    variable_lines = render_branch_variable_lines(branch_variables or [])
     if kind == "question":
         body = (
             "This step needs input from the user. Call the "
@@ -449,6 +472,12 @@ def compose_workflow_step_directive(
             "The agent pauses after the 'human_feedback' call; the "
             "user's next message is their answer."
         )
+        if variable_lines and not done:
+            footer += (
+                f"\nAfter the user replies, call '{wf_name}' with the "
+                f"answer mapped to these arguments (omit any you don't "
+                f"actually have):\n{variable_lines}"
+            )
         return WorkflowStepDirective(header=header, body=body, footer=footer)
 
     body = (
@@ -458,6 +487,13 @@ def compose_workflow_step_directive(
     )
     if done:
         footer = "This is the FINAL step of this workflow."
+    elif variable_lines:
+        footer = (
+            f"When you have FINISHED this step, call '{wf_name}' again, "
+            f"passing the values you observed for these arguments — they "
+            f"decide the next step. Pass only values you actually "
+            f"observed; omit anything you don't have:\n{variable_lines}"
+        )
     else:
         footer = ""
     return WorkflowStepDirective(header=header, body=body, footer=footer)
@@ -652,6 +688,7 @@ __all__ = [
     "compose_generate_workflow_system_prompt",
     "compose_workflow_empty_action",
     "compose_workflow_step_directive",
+    "render_branch_variable_lines",
     "compose_forced_run_kickoff",
     "compose_forced_run_follow_up",
     "parse_generated_workflow_json",

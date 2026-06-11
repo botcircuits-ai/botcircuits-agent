@@ -37,7 +37,11 @@ from botcircuits.agent.skill import (
 from botcircuits.agent.store import ConversationStore
 from botcircuits.agent.tools import ToolRegistry
 from botcircuits.agent.tools.builtins.human_feedback import HUMAN_FEEDBACK_TOOL
-from botcircuits.agent.workflow import active_workflow_names
+from botcircuits.agent.workflow import (
+    active_workflow_names,
+    workflow_branch_variables,
+)
+from botcircuits.agent.workflow.cli_commands import render_branch_variable_lines
 
 MAX_AGENT_STEPS = 500
 
@@ -105,11 +109,19 @@ def _available_workflow_tools(reg: ToolRegistry) -> list[tuple[str, str]]:
 def _with_workflow_reminder(system: str | None, reg: ToolRegistry) -> str | None:
     """Append a workflow-related reminder to `system`.
 
-    Two cases:
-      - A workflow is mid-run: tell the model to act on the current step
-        only. The agent loop auto-recalls the workflow tool once the
-        model finishes acting (no tool calls left), so the model must
-        NOT call the workflow tool itself — that would double-advance.
+    Three cases:
+      - A workflow is mid-run on a NON-branching step: tell the model to
+        act on the current step only. The agent loop auto-recalls the
+        workflow tool once the model finishes acting (no tool calls
+        left), so the model must NOT call the workflow tool itself —
+        that would double-advance.
+      - A workflow is mid-run on a BRANCHING step (it has pending branch
+        variables): tell the model to act on the step first, then
+        re-call the workflow tool with the values it observed — the
+        slots ride the model's own tool call (the resolver's
+        highest-priority source) instead of being re-derived from a
+        transcript snapshot. The loop's empty-args auto-recall still
+        covers a model that forgets.
       - No workflow is active but workflow tools exist: remind the model
         that those tools MUST be called as the first action when the
         user's request matches one — do NOT ask clarifying questions in
@@ -120,13 +132,30 @@ def _with_workflow_reminder(system: str | None, reg: ToolRegistry) -> str | None
     names = active_workflow_names(reg)
     if names:
         name = names[0]
-        reminder = (
-            f"\n\n[Active workflow] The workflow tool '{name}' is mid-execution. "
-            f"Perform ONLY the action of the current step (call a tool, send "
-            f"a reply, or call 'human_feedback' if the step asks the user a "
-            f"question). Do NOT call '{name}' yourself — the next step is "
-            f"requested for you automatically once you finish acting."
+        branch_lines = render_branch_variable_lines(
+            workflow_branch_variables(reg, name)
         )
+        if branch_lines:
+            reminder = (
+                f"\n\n[Active workflow] The workflow tool '{name}' is "
+                f"mid-execution on a branching step. FIRST perform the "
+                f"action of the current step (call a tool, send a reply, "
+                f"or call 'human_feedback' if the step asks the user a "
+                f"question — then wait for their reply). Once the step is "
+                f"genuinely complete, call '{name}' passing the values you "
+                f"observed for these arguments — they decide the next "
+                f"step. Omit any you don't actually have; never invent "
+                f"values:\n{branch_lines}"
+            )
+        else:
+            reminder = (
+                f"\n\n[Active workflow] The workflow tool '{name}' is "
+                f"mid-execution. Perform ONLY the action of the current "
+                f"step (call a tool, send a reply, or call "
+                f"'human_feedback' if the step asks the user a question). "
+                f"Do NOT call '{name}' yourself — the next step is "
+                f"requested for you automatically once you finish acting."
+            )
         return (system or "") + reminder
 
     available = _available_workflow_tools(reg)
@@ -185,9 +214,14 @@ def _auto_recall_calls(reg: ToolRegistry) -> list[ToolCall]:
     workflow is still mid-run: the loop injects these to fetch the next
     step (re-entry runs slot normalization inside the workflow tool),
     instead of relying on the model to remember to re-call it. Empty
-    args — the step's inputs were already collected via the actions the
-    model just performed; the normalizer pulls them from the recent
-    transcript on re-entry.
+    args — the resolver/normalizer fall back to the recent transcript.
+
+    For branching steps this is the FALLBACK path only: the step
+    directive and the [Active workflow] reminder ask the model to
+    re-call the workflow tool itself with the branch variables as args
+    (which suppresses auto-recall, since the turn then has tool calls).
+    A model that forgets degrades to this empty-args recall, never to a
+    stall.
 
     Normally there's exactly one active workflow, but we handle several
     defensively (one call each).

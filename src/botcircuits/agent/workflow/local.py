@@ -412,6 +412,20 @@ async def run_workflow(
     if not isinstance(running_step, str):
         running_step = None
 
+    # If the engine paused on a branching step, surface the filtered
+    # variable schema that branch references. The tool wrapper uses it
+    # to (a) widen the tool's input_schema and (b) tell the model to
+    # re-call the tool with those values — the model-supplied args then
+    # hit the slot resolver's highest-priority source on re-entry.
+    branch_variables: list[dict] = []
+    pending_after = paused_session.get("pendingBranch")
+    if (
+        not done
+        and isinstance(pending_after, dict)
+        and isinstance(pending_after.get("stepId"), str)
+    ):
+        branch_variables = variables_for_step(flow, pending_after["stepId"])
+
     if done or not action:
         # Workflow finished — drop the saved session so a fresh call
         # restarts from `start`.
@@ -431,4 +445,5 @@ async def run_workflow(
         "conditions": conditions,
         "choices": choices,
         "variables": variables,
+        "branch_variables": branch_variables,
     }

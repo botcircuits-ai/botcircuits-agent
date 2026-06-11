@@ -57,6 +57,35 @@ async def run_workflow(
     )
 
 
+_EMPTY_SCHEMA: dict = {"type": "object", "properties": {}}
+
+# flow.variables dataType → JSON-schema type for the tool's input_schema.
+_JSON_TYPE_BY_DATATYPE = {"number": "number", "boolean": "boolean"}
+
+
+def _branch_input_schema(branch_variables: list[dict]) -> dict:
+    """Build the tool input_schema exposing a pending branch's variables.
+
+    The model sees these as ordinary optional tool arguments — passing
+    them on the re-call is how the slots ride the main loop's tool call
+    instead of being re-derived from the transcript inside the tool.
+    """
+    properties: dict[str, dict] = {}
+    for v in branch_variables:
+        name = v.get("variableName")
+        if not isinstance(name, str) or not name:
+            continue
+        dtype = (v.get("dataType") or "string").lower()
+        prop: dict = {"type": _JSON_TYPE_BY_DATATYPE.get(dtype, "string")}
+        desc = v.get("description")
+        if isinstance(desc, str) and desc:
+            prop["description"] = desc
+        properties[name] = prop
+    if not properties:
+        return dict(_EMPTY_SCHEMA)
+    return {"type": "object", "properties": properties}
+
+
 def workflow_tool(
     record: dict,
     *,
@@ -71,6 +100,16 @@ def workflow_tool(
     the tool's closure so the next invocation re-enters the same
     workflow conversation instead of starting a new one.
 
+    When the engine pauses on a *branching* step, the result carries the
+    filtered variable schema the branch references (`branch_variables`).
+    The handler then (a) widens the tool's `input_schema` to expose those
+    variables and (b) appends a directive line asking the model to
+    re-call the tool with the observed values — so the slots arrive as
+    plain tool-call args (the slot resolver's highest-priority source)
+    instead of being re-derived from a transcript snapshot. The agent
+    loop's empty-args auto-recall remains as the fallback when the model
+    doesn't re-call.
+
     `provider` enables Layer B (LLM-driven variable normalization) on
     workflow re-entry. The tool's handler accepts an optional `context`
     dict (filled by the agent loop) carrying `last_assistant_message`
@@ -80,7 +119,7 @@ def workflow_tool(
     wf_name = record["name"]
     wf_desc = record.get("description") or f"Run workflow {wf_name}."
 
-    state: dict[str, str | None] = {"session_id": None}
+    state: dict[str, object] = {"session_id": None, "branch_variables": []}
 
     async def _handler(args: dict, context: dict | None = None) -> str:
         ctx = context or {}
@@ -95,6 +134,7 @@ def workflow_tool(
         action = result.get("action")
         done = bool(result.get("done"))
         kind = result.get("kind")
+        branch_variables = result.get("branch_variables") or []
 
         # Reset the closure's session_id as soon as the workflow finishes
         # so the next user request starts a fresh run. We do this even
@@ -102,8 +142,16 @@ def workflow_tool(
         # together with the final state's action payload.
         if done:
             state["session_id"] = None
+            branch_variables = []
         else:
             state["session_id"] = result.get("session_id")
+
+        # Track the pending branch's variables and mirror them onto the
+        # tool's input_schema so the next provider call advertises them.
+        # `tool` is the LocalTool constructed below; the closure cell
+        # resolves at call time, after construction.
+        state["branch_variables"] = branch_variables
+        tool.input_schema = _branch_input_schema(branch_variables)
 
         # No action and not done shouldn't happen with a well-formed STM,
         # but guard against it so the LLM gets a clear signal instead of
@@ -115,24 +163,45 @@ def workflow_tool(
         # has to perform it (tool call, human_feedback question, message,
         # skill, etc.) before the workflow can advance. A `question`-kind
         # step forces a `human_feedback` call (which pauses the loop);
-        # other steps auto-advance via the agent loop's recall. Wording
-        # is shared with the out-of-process tool wrapper (Hermes) via
-        # cli_commands.
+        # a branching step asks the model to re-call this tool with the
+        # branch variables once the step is done; anything else
+        # auto-advances via the agent loop's recall. Wording is shared
+        # with the out-of-process tool wrapper (Hermes) via cli_commands.
         directive = compose_workflow_step_directive(
             wf_name, done=done, kind=kind,
+            branch_variables=branch_variables,
         )
         return directive.as_plain_text(action)
 
     tool = LocalTool(
         name=wf_name,
         description=wf_desc,
-        input_schema={"type": "object", "properties": {}},
+        input_schema=dict(_EMPTY_SCHEMA),
         handler=_handler,
     )
     # Expose the session state so the agent loop can detect that this
     # workflow is mid-execution and remind the model to re-enter it.
     tool._workflow_state = state  # type: ignore[attr-defined]
     return tool
+
+
+def workflow_branch_variables(reg: ToolRegistry, name: str) -> list[dict]:
+    """The pending branch's variable schema for the named workflow tool.
+
+    Non-empty only while the workflow is paused on a branching step.
+    The agent loop reads this to tell the model, via the `[Active
+    workflow]` reminder, to re-call the tool with those values once the
+    current step is done.
+    """
+    for tool in reg.all():
+        if tool.name != name:
+            continue
+        state = getattr(tool, "_workflow_state", None)
+        if isinstance(state, dict):
+            variables = state.get("branch_variables")
+            if isinstance(variables, list):
+                return variables
+    return []
 
 
 def active_workflow_names(reg: ToolRegistry) -> list[str]:
@@ -210,5 +279,6 @@ __all__ = [
     "run_workflow",
     "workflow_tool",
     "active_workflow_names",
+    "workflow_branch_variables",
     "register_workflows",
 ]
