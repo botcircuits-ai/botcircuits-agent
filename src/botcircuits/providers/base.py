@@ -27,6 +27,23 @@ class LLMProvider(ABC):
     name: str = "base"
     model: str = ""
 
+    # Session-cumulative real usage, accumulated by `record_usage()` on every
+    # normalized response. Provider-level (not Agent-level) on purpose: the
+    # agent loop is not the only caller — workflow Layer-B normalization and
+    # the condition indexer call `complete()` directly, and their tokens must
+    # count too. Class attributes are safe int defaults; `self.x += n` creates
+    # per-instance attributes on first write.
+    usage_input_tokens: int = 0
+    usage_output_tokens: int = 0
+    usage_llm_calls: int = 0
+
+    def record_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Accumulate one API call's real token usage onto session totals.
+        Concrete providers call this from their normalize step."""
+        self.usage_input_tokens += max(0, int(input_tokens or 0))
+        self.usage_output_tokens += max(0, int(output_tokens or 0))
+        self.usage_llm_calls += 1
+
     @abstractmethod
     async def complete(
         self,

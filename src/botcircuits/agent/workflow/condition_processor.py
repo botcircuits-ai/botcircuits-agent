@@ -321,9 +321,17 @@ async def generate_expressions_and_variables(
         )
 
     # Aggregate variables, preserving first-seen order, dropping duplicates.
+    # The author's existing `flow.variables` are seeded FIRST so hand-authored
+    # variables always survive an index — including those referenced only by
+    # hand-written `choices` (which the LLM indexer never sees and so never
+    # re-declares). Without this, re-indexing silently drops them and the
+    # runtime's Layer A/B normalization has no schema to coerce their slots
+    # against, so those branches mis-fire. The author wins on a name collision:
+    # they declared the dataType deliberately, and the indexer's guess for a
+    # same-named variable shouldn't override it.
     seen_names: set[str] = set()
     aggregated: list[dict] = []
-    for v in variables:
+    for v in list(flow.get("variables") or []) + list(variables):
         if not isinstance(v, dict):
             continue
         name = v.get("variableName")

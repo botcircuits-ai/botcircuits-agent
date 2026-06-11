@@ -37,6 +37,11 @@ class LLMResponse:
     tool_calls: list[ToolCall]
     stop_reason: Literal["end_turn", "tool_use", "max_tokens", "other"]
     raw: Any  # provider-native response, useful for debugging or token counting
+    # Real token usage from the provider's API response (0 when the vendor
+    # didn't report usage, e.g. an aborted stream). Normalized here so callers
+    # never have to poke vendor-specific shapes out of `raw`.
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass

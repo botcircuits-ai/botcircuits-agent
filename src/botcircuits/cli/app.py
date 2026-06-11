@@ -324,6 +324,17 @@ async def amain(args: argparse.Namespace) -> int:
                 out(C.yellow("(interrupted)"))
                 # session keeps going
 
+            # Session-cumulative REAL token usage, one machine-parseable line
+            # per turn (the last one wins for whole-run totals). Counted at the
+            # provider level so Layer-B normalization / workflow-indexer calls
+            # are included. Color auto-disables when piped, so downstream
+            # harnesses can parse the plain text.
+            out(C.dim(
+                f"[usage] llm_calls={provider.usage_llm_calls} "
+                f"input_tokens={provider.usage_input_tokens} "
+                f"output_tokens={provider.usage_output_tokens}"
+            ))
+
             # Piped mode used to stop after one message. Instead, keep reading:
             # each subsequent stdin line is the next turn of a scripted
             # multi-turn run, sharing this process's in-memory session (so the

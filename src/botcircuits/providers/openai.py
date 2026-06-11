@@ -120,8 +120,13 @@ class OpenAIProvider(LLMProvider):
                 tool_calls.append(ToolCall(id=item.call_id, name=item.name,
                                             arguments=args))
         stop_reason = "tool_use" if tool_calls else "end_turn"
+        usage = getattr(resp, "usage", None)
+        pin = int(getattr(usage, "input_tokens", 0) or 0)
+        pout = int(getattr(usage, "output_tokens", 0) or 0)
+        self.record_usage(pin, pout)
         return LLMResponse(text="\n".join(text_parts).strip(),
-                           tool_calls=tool_calls, stop_reason=stop_reason, raw=resp)
+                           tool_calls=tool_calls, stop_reason=stop_reason, raw=resp,
+                           input_tokens=pin, output_tokens=pout)
 
     async def complete(self, system, messages, tools, hosted_mcp, skills, max_tokens):
         kwargs = self._build_kwargs(system, messages, tools, hosted_mcp,

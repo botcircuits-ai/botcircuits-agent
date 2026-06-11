@@ -87,11 +87,17 @@ class AnthropicProvider(LLMProvider):
                                             arguments=block.input or {}))
         stop_map = {"end_turn": "end_turn", "tool_use": "tool_use",
                     "max_tokens": "max_tokens"}
+        usage = getattr(resp, "usage", None)
+        pin = int(getattr(usage, "input_tokens", 0) or 0)
+        pout = int(getattr(usage, "output_tokens", 0) or 0)
+        self.record_usage(pin, pout)
         return LLMResponse(
             text="\n".join(text_parts).strip(),
             tool_calls=tool_calls,
             stop_reason=stop_map.get(resp.stop_reason, "other"),
             raw=resp,
+            input_tokens=pin,
+            output_tokens=pout,
         )
 
     async def complete(self, system, messages, tools, hosted_mcp, skills, max_tokens):

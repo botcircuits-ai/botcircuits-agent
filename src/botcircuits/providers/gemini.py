@@ -109,9 +109,21 @@ class GeminiProvider(LLMProvider):
                             thought_signature=getattr(
                                 part, "thought_signature", None)))
         stop_reason = "tool_use" if tool_calls else "end_turn"
+        # usage_metadata on the LAST chunk that carries it holds the call's
+        # cumulative totals (complete() passes a single-element list). Thinking
+        # tokens are billed output, so they count toward output_tokens.
+        pin = pout = 0
+        for chunk in reversed(chunks):
+            um = getattr(chunk, "usage_metadata", None)
+            if um is not None and getattr(um, "prompt_token_count", None) is not None:
+                pin = int(um.prompt_token_count or 0)
+                pout = (int(getattr(um, "candidates_token_count", 0) or 0)
+                        + int(getattr(um, "thoughts_token_count", 0) or 0))
+                break
+        self.record_usage(pin, pout)
         return LLMResponse(text="".join(text_parts).strip(),
                            tool_calls=tool_calls, stop_reason=stop_reason,
-                           raw=chunks)
+                           raw=chunks, input_tokens=pin, output_tokens=pout)
 
     async def complete(self, system, messages, tools, hosted_mcp, skills, max_tokens):
         if hosted_mcp:
