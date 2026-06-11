@@ -112,18 +112,23 @@ class GeminiProvider(LLMProvider):
         # usage_metadata on the LAST chunk that carries it holds the call's
         # cumulative totals (complete() passes a single-element list). Thinking
         # tokens are billed output, so they count toward output_tokens.
-        pin = pout = 0
+        # `prompt_token_count` already INCLUDES the implicitly-cached portion;
+        # `cached_content_token_count` breaks it out (billed at a discount).
+        pin = pout = cache_read = 0
         for chunk in reversed(chunks):
             um = getattr(chunk, "usage_metadata", None)
             if um is not None and getattr(um, "prompt_token_count", None) is not None:
                 pin = int(um.prompt_token_count or 0)
                 pout = (int(getattr(um, "candidates_token_count", 0) or 0)
                         + int(getattr(um, "thoughts_token_count", 0) or 0))
+                cache_read = int(
+                    getattr(um, "cached_content_token_count", 0) or 0)
                 break
-        self.record_usage(pin, pout)
+        self.record_usage(pin, pout, cache_read)
         return LLMResponse(text="".join(text_parts).strip(),
                            tool_calls=tool_calls, stop_reason=stop_reason,
-                           raw=chunks, input_tokens=pin, output_tokens=pout)
+                           raw=chunks, input_tokens=pin, output_tokens=pout,
+                           cache_read_tokens=cache_read)
 
     async def complete(self, system, messages, tools, hosted_mcp, skills, max_tokens):
         if hosted_mcp:

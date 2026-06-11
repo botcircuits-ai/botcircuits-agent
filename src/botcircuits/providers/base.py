@@ -33,15 +33,30 @@ class LLMProvider(ABC):
     # the condition indexer call `complete()` directly, and their tokens must
     # count too. Class attributes are safe int defaults; `self.x += n` creates
     # per-instance attributes on first write.
+    #
+    # `usage_input_tokens` is the TOTAL prompt size (cached portion included);
+    # the cache counters break out how much of it was served from / written
+    # to the prompt cache, so cost accounting can apply the vendor's cache
+    # discount instead of billing everything at the full input rate.
     usage_input_tokens: int = 0
     usage_output_tokens: int = 0
+    usage_cache_read_tokens: int = 0
+    usage_cache_write_tokens: int = 0
     usage_llm_calls: int = 0
 
-    def record_usage(self, input_tokens: int, output_tokens: int) -> None:
+    def record_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> None:
         """Accumulate one API call's real token usage onto session totals.
         Concrete providers call this from their normalize step."""
         self.usage_input_tokens += max(0, int(input_tokens or 0))
         self.usage_output_tokens += max(0, int(output_tokens or 0))
+        self.usage_cache_read_tokens += max(0, int(cache_read_tokens or 0))
+        self.usage_cache_write_tokens += max(0, int(cache_write_tokens or 0))
         self.usage_llm_calls += 1
 
     @abstractmethod

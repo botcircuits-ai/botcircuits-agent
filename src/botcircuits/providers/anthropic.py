@@ -39,13 +39,43 @@ class AnthropicProvider(LLMProvider):
         return {"role": m.role, "content": content}
 
     def _build_kwargs(self, system, messages, tools, hosted_mcp, skills, max_tokens):
-        """Shared between complete() and stream() so they use identical config."""
+        """Shared between complete() and stream() so they use identical config.
+
+        Prompt caching: three `cache_control` breakpoints (limit is 4),
+        ordered along Anthropic's cache hierarchy (tools → system → messages):
+
+          1. the last LOCAL tool — the tool catalog is the largest fully
+             static chunk and survives even when the system prompt changes
+             (e.g. the per-turn `[Active workflow]` reminder);
+          2. the system prompt (sent as a block list so the breakpoint can
+             ride on it) — static for plain chat, hits whenever the
+             workflow reminder is unchanged between calls;
+          3. the last content block of the last message — a MOVING
+             breakpoint: conversation history is append-only, so each call
+             re-reads the previous prefix at the cached rate and extends
+             the entry.
+
+        Segments under the model's minimum (1024 tokens) silently don't
+        cache; a changed prefix is re-written at a 25% premium and read
+        back at 90% off — net positive for any multi-step agent loop.
+        """
         api_tools = [{"name": t.name, "description": t.description,
                       "input_schema": t.input_schema} for t in tools]
+        if api_tools:
+            api_tools[-1]["cache_control"] = {"type": "ephemeral"}
+        api_messages = [self._msg_to_api(m) for m in messages]
+        if api_messages and api_messages[-1]["content"]:
+            api_messages[-1]["content"][-1]["cache_control"] = {
+                "type": "ephemeral"
+            }
+        api_system: Any = system
+        if system:
+            api_system = [{"type": "text", "text": system,
+                           "cache_control": {"type": "ephemeral"}}]
         betas: list[str] = []
         kwargs: dict[str, Any] = {
-            "model": self.model, "max_tokens": max_tokens, "system": system,
-            "messages": [self._msg_to_api(m) for m in messages],
+            "model": self.model, "max_tokens": max_tokens, "system": api_system,
+            "messages": api_messages,
             "temperature": DEFAULT_TEMPERATURE,
         }
         if hosted_mcp:
@@ -88,9 +118,14 @@ class AnthropicProvider(LLMProvider):
         stop_map = {"end_turn": "end_turn", "tool_use": "tool_use",
                     "max_tokens": "max_tokens"}
         usage = getattr(resp, "usage", None)
-        pin = int(getattr(usage, "input_tokens", 0) or 0)
+        # Anthropic's `input_tokens` EXCLUDES the cached/written portions;
+        # normalize to the TOTAL prompt size (LLMResponse contract).
+        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        pin = (int(getattr(usage, "input_tokens", 0) or 0)
+               + cache_read + cache_write)
         pout = int(getattr(usage, "output_tokens", 0) or 0)
-        self.record_usage(pin, pout)
+        self.record_usage(pin, pout, cache_read, cache_write)
         return LLMResponse(
             text="\n".join(text_parts).strip(),
             tool_calls=tool_calls,
@@ -98,6 +133,8 @@ class AnthropicProvider(LLMProvider):
             raw=resp,
             input_tokens=pin,
             output_tokens=pout,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
         )
 
     async def complete(self, system, messages, tools, hosted_mcp, skills, max_tokens):

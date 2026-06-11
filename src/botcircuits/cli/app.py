@@ -328,11 +328,15 @@ async def amain(args: argparse.Namespace) -> int:
             # per turn (the last one wins for whole-run totals). Counted at the
             # provider level so Layer-B normalization / workflow-indexer calls
             # are included. Color auto-disables when piped, so downstream
-            # harnesses can parse the plain text.
+            # harnesses can parse the plain text. input_tokens is the TOTAL
+            # prompt size; the cache counters break out the portion served
+            # from / written to the prompt cache (billed at vendor discounts).
             out(C.dim(
                 f"[usage] llm_calls={provider.usage_llm_calls} "
                 f"input_tokens={provider.usage_input_tokens} "
-                f"output_tokens={provider.usage_output_tokens}"
+                f"output_tokens={provider.usage_output_tokens} "
+                f"cache_read_tokens={provider.usage_cache_read_tokens} "
+                f"cache_write_tokens={provider.usage_cache_write_tokens}"
             ))
 
             # Piped mode used to stop after one message. Instead, keep reading:

@@ -40,8 +40,19 @@ class LLMResponse:
     # Real token usage from the provider's API response (0 when the vendor
     # didn't report usage, e.g. an aborted stream). Normalized here so callers
     # never have to poke vendor-specific shapes out of `raw`.
+    #
+    # `input_tokens` is the TOTAL prompt size including any cached portion —
+    # vendors disagree (Anthropic's `usage.input_tokens` EXCLUDES cached
+    # tokens; Gemini's `prompt_token_count` and OpenAI's `input_tokens`
+    # include them), so each provider normalizes to the total here.
+    # `cache_read_tokens` is the portion served from the prompt cache
+    # (billed at a steep discount); `cache_write_tokens` is the portion
+    # written to it this call (Anthropic bills a 25% premium; Gemini/OpenAI
+    # implicit caching has no write charge and reports 0).
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 @dataclass
