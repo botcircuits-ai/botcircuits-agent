@@ -40,6 +40,7 @@ from botcircuits.agent.tools.builtins.human_feedback import HUMAN_FEEDBACK_TOOL
 from botcircuits.agent.workflow import (
     active_workflow_names,
     workflow_branch_variables,
+    workflow_finished_quietly,
 )
 from botcircuits.agent.workflow.cli_commands import render_branch_variable_lines
 
@@ -205,6 +206,23 @@ def _human_feedback_pause(
             question = tc.arguments.get("question") or ""
         return question or output
     return None
+
+
+def _quiet_workflow_finish(
+    reg: ToolRegistry, tool_calls: list[ToolCall]
+) -> bool:
+    """True when this round was solely loop-synthesized workflow recalls and
+    every recalled workflow finished with nothing left to perform (trailing
+    engine-side systemActions only). The model's previous text — the one
+    that made the turn look terminal before the recall — already IS the
+    final answer, so another provider call would only buy a restatement."""
+    if not tool_calls:
+        return False
+    if not all(tc.id.startswith(_AUTO_RECALL_ID_PREFIX) for tc in tool_calls):
+        return False
+    return all(
+        workflow_finished_quietly(reg, tc.name) for tc in tool_calls
+    )
 
 
 def _auto_recall_calls(reg: ToolRegistry) -> list[ToolCall]:
@@ -523,6 +541,13 @@ class Agent:
                 ])
                 convo.messages.append(self._result_message(tool_calls, results))
 
+                # The loop's own recalls all came back "workflow finished,
+                # nothing to perform" — the model's text from this round is
+                # already the final answer; end the turn without another
+                # provider call.
+                if _quiet_workflow_finish(self.tools, tool_calls):
+                    return text, convo.session_id
+
                 # If the model asked the user a question via human_feedback,
                 # pause the loop: surface the question as the reply and hand
                 # control back to the user. Their next message resumes.
@@ -648,6 +673,15 @@ class Agent:
                     ordered = [by_id[tc.id] for tc in tool_calls]
                     convo.messages.append(
                         self._result_message(tool_calls, ordered))
+
+                    # The loop's own recalls all came back "workflow
+                    # finished, nothing to perform" — the streamed text from
+                    # this round already is the final answer; end the turn
+                    # without another provider call.
+                    if _quiet_workflow_finish(self.tools, tool_calls):
+                        final_text = text
+                        hit_step_limit = False
+                        break
 
                     # human_feedback pauses the loop: surface its question
                     # as the final reply and hand control back to the user

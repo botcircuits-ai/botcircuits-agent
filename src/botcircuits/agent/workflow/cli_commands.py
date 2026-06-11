@@ -509,6 +509,21 @@ def compose_workflow_empty_action(wf_name: str) -> str:
     return f"Workflow '{wf_name}' finished with no further actions."
 
 
+def render_system_notes(notes: list[str]) -> str:
+    """Render systemAction audit notes as a block to prepend to a step
+    directive. These steps were executed engine-side (no model action
+    needed); the block keeps the bookkeeping visible in the transcript so
+    later steps (e.g. an emit-result action) can rely on it. Wording is
+    centralized here so the in-process and Hermes wrappers can't drift."""
+    if not notes:
+        return ""
+    lines = "\n".join(f"- {n}" for n in notes)
+    return (
+        "Recorded by the workflow engine (already done — no action "
+        f"needed):\n{lines}"
+    )
+
+
 def compose_forced_run_kickoff(target: str, initial_args: dict) -> str:
     """Return the synthetic user "kickoff" message for `/workflow run`.
 

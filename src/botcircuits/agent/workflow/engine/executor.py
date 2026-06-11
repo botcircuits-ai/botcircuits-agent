@@ -1,7 +1,7 @@
 """Flow executor — walks the workflow definition step-by-step.
 
-The step-kind discriminator is the top-level `step.type` field. Only
-two values are recognized:
+The step-kind discriminator is the top-level `step.type` field. Four
+values are recognized:
 
   - `start`        → no-op, fall through to `next`.
   - `agentAction`  → emit the action payload; the workflow pauses. If
@@ -13,13 +13,23 @@ two values are recognized:
                      tagged `kind: "question"` so the tool wrapper forces
                      a `human_feedback` call (which pauses the loop until
                      the user replies).
+  - `systemAction` → NON-pausing bookkeeping. The engine records the
+                     (slot-interpolated) action text as an audit note
+                     and keeps walking — no LLM round-trip. Branching,
+                     if any, is evaluated IMMEDIATELY against current
+                     slots: by the time the walk reaches a systemAction,
+                     slot values were already filled when the previous
+                     pausing step re-entered, so there is nothing to
+                     wait for. Accumulated notes ride on the next
+                     pausing step's payload so the model (and the
+                     transcript) still see the audit trail.
 
-Branching lives on `agentAction`/`question` itself — there is no
-separate `choice` step type. `conditions` and `choices` sit at the step
-root next to `type` and `next` because they describe control flow, not
-step payload. The executor records a `pendingBranch` marker on the
-saved session when it pauses on a step with conditions, then resolves
-it on re-entry by evaluating the choices against current slot values.
+Branching lives on the step itself — there is no separate `choice`
+step type. `conditions` and `choices` sit at the step root next to
+`type` and `next` because they describe control flow, not step payload.
+The executor records a `pendingBranch` marker on the saved session when
+it pauses on a step with conditions, then resolves it on re-entry by
+evaluating the choices against current slot values.
 
 Anything else (`message`, `prompt`, `aiTask`, `choice`, …) raises so
 unsupported steps don't silently do nothing.
@@ -33,6 +43,12 @@ from botcircuits.agent.workflow.engine.handlers.action import handle_action
 from botcircuits.agent.workflow.engine.handlers.choice import evaluate_choices
 from botcircuits.agent.workflow.engine.handlers.question import handle_question
 from botcircuits.agent.workflow.engine.state import WorkflowStateContext
+from botcircuits.agent.workflow.engine.utils import fill_text_with_slots
+
+#: Upper bound on consecutive non-pausing steps walked in one call. A
+#: systemAction cycle (a → b → a) would otherwise spin forever — there's
+#: no LLM in the loop to break it.
+_MAX_SYSTEM_CHAIN = 100
 
 
 def _invoke_step(
@@ -61,12 +77,25 @@ def _invoke_step(
             next_step = response["fallbackStep"]
         if response and response.get("message"):
             data = response
+    elif step_type == "systemAction":
+        # Non-pausing: record the (slot-interpolated) action text as an
+        # audit note and keep walking — no payload, no LLM round-trip.
+        # Branching is evaluated IMMEDIATELY against current slots (filled
+        # at the previous pausing step's re-entry); no pendingBranch dance.
+        session_context = event["message"]["data"]["sessionContext"]
+        note = fill_text_with_slots(settings.get("action") or "", session_context)
+        if note.strip():
+            event.setdefault("systemNotes", []).append(note.strip())
+        if step.get("choices"):
+            next_step = evaluate_choices(
+                step["choices"], event["message"], next_step
+            )
     else:
         raise ValueError(
             f"Local workflow engine does not support step type {step_type!r} "
             f"(step {current_step_id!r}). Supported types: 'start', "
-            f"'agentAction', 'question'. To branch, put `conditions` on an "
-            f"agentAction."
+            f"'agentAction', 'question', 'systemAction'. To branch, put "
+            f"`conditions` on an agentAction."
         )
 
     return {"nextStep": next_step, "data": data}
@@ -134,10 +163,21 @@ async def run_flow(
         "settings": None,
         "flow": flow,
         "workflowStateContext": state_context,
+        # Audit notes accumulated by non-pausing systemAction steps; they
+        # ride on the next pause's return so the model sees what the
+        # engine recorded on its behalf.
+        "systemNotes": [],
     }
 
     steps = flow.get("steps", {})
+    walked = 0
     while current_step_id:
+        walked += 1
+        if walked > _MAX_SYSTEM_CHAIN:
+            raise ValueError(
+                f"Workflow walked {_MAX_SYSTEM_CHAIN} steps without pausing "
+                f"— a systemAction cycle? (last step {current_step_id!r})"
+            )
         step = steps.get(current_step_id)
         if step is None:
             raise ValueError(
@@ -148,6 +188,8 @@ async def run_flow(
 
         # If this step has conditions, defer branching to re-entry —
         # record the pending choice and walk to the static `next` for now.
+        # (systemAction never lands here: it yields no data and resolved
+        # its choices inline.)
         if result["data"]:
             if step.get("choices") or step.get("conditions"):
                 state_context.saved_session["pendingBranch"] = {
@@ -163,10 +205,12 @@ async def run_flow(
                 "currentStepId": current_step_id,
                 "data": result["data"],
                 "savedSession": state_context.saved_session,
+                "systemNotes": event["systemNotes"],
             }
 
     return {
         "currentStepId": None,
         "data": None,
         "savedSession": state_context.saved_session,
+        "systemNotes": event["systemNotes"],
     }

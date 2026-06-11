@@ -56,7 +56,7 @@ def _collect_condition_steps(flow: dict) -> list[dict]:
     for step_id, step in steps.items():
         if not isinstance(step, dict):
             continue
-        if step.get("type") not in ("agentAction", "question"):
+        if step.get("type") not in ("agentAction", "question", "systemAction"):
             continue
         raw = step.get("conditions")
         if not isinstance(raw, list):

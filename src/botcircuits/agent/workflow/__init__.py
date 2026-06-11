@@ -17,6 +17,7 @@ from botcircuits.agent.workflow import local
 from botcircuits.agent.workflow.cli_commands import (
     compose_workflow_empty_action,
     compose_workflow_step_directive,
+    render_system_notes,
 )
 from botcircuits.agent.workflow.local import LocalWorkflowError
 
@@ -119,7 +120,11 @@ def workflow_tool(
     wf_name = record["name"]
     wf_desc = record.get("description") or f"Run workflow {wf_name}."
 
-    state: dict[str, object] = {"session_id": None, "branch_variables": []}
+    state: dict[str, object] = {
+        "session_id": None,
+        "branch_variables": [],
+        "finished_quietly": False,
+    }
 
     async def _handler(args: dict, context: dict | None = None) -> str:
         ctx = context or {}
@@ -135,6 +140,7 @@ def workflow_tool(
         done = bool(result.get("done"))
         kind = result.get("kind")
         branch_variables = result.get("branch_variables") or []
+        system_notes = result.get("system_notes") or []
 
         # Reset the closure's session_id as soon as the workflow finishes
         # so the next user request starts a fresh run. We do this even
@@ -153,11 +159,22 @@ def workflow_tool(
         state["branch_variables"] = branch_variables
         tool.input_schema = _branch_input_schema(branch_variables)
 
+        # A "quiet finish": the workflow ended and the trailing steps were
+        # all engine-side bookkeeping (systemAction) — nothing left for the
+        # model to perform. The agent loop reads this flag (via
+        # `workflow_finished_quietly`) to end the turn WITHOUT another
+        # provider call when its own auto-recall produced this result.
+        state["finished_quietly"] = bool(done and not action)
+
+        notes_block = render_system_notes(system_notes)
+
         # No action and not done shouldn't happen with a well-formed STM,
         # but guard against it so the LLM gets a clear signal instead of
-        # an empty string.
+        # an empty string. (With trailing systemActions this is a NORMAL
+        # terminal shape — the notes carry what the engine recorded.)
         if not action:
-            return compose_workflow_empty_action(wf_name)
+            finished = compose_workflow_empty_action(wf_name)
+            return f"{notes_block}\n\n{finished}" if notes_block else finished
 
         # Frame the action as a directive, not a status update — the LLM
         # has to perform it (tool call, human_feedback question, message,
@@ -171,7 +188,8 @@ def workflow_tool(
             wf_name, done=done, kind=kind,
             branch_variables=branch_variables,
         )
-        return directive.as_plain_text(action)
+        text = directive.as_plain_text(action)
+        return f"{notes_block}\n\n{text}" if notes_block else text
 
     tool = LocalTool(
         name=wf_name,
@@ -202,6 +220,22 @@ def workflow_branch_variables(reg: ToolRegistry, name: str) -> list[dict]:
             if isinstance(variables, list):
                 return variables
     return []
+
+
+def workflow_finished_quietly(reg: ToolRegistry, name: str) -> bool:
+    """True when the named workflow tool's LAST call ended the workflow with
+    nothing left for the model to perform (the trailing steps were all
+    engine-side systemActions). The agent loop checks this after its own
+    auto-recall: if every recalled workflow finished quietly, the model's
+    previous text already was the final answer, so the loop ends the turn
+    instead of spending another provider call on a restatement."""
+    for tool in reg.all():
+        if tool.name != name:
+            continue
+        state = getattr(tool, "_workflow_state", None)
+        if isinstance(state, dict):
+            return bool(state.get("finished_quietly"))
+    return False
 
 
 def active_workflow_names(reg: ToolRegistry) -> list[str]:

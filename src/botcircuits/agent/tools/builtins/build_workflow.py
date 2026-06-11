@@ -5,8 +5,9 @@ questions when scope is ambiguous), then calls this tool ONCE with a
 structured `workflow` payload describing the steps. The tool:
 
   1. Validates the payload against the engine's supported shape
-     (`start`, `agentAction`, and `question` step types; branching lives
-     on agentAction/question via `conditions`).
+     (`start`, `agentAction`, `question`, and `systemAction` step types;
+     branching lives on the step via `conditions`. `systemAction` is
+     non-pausing engine-side bookkeeping — no LLM round-trip).
   2. Renders a confirmation block — "Workflow: <summary>\\nSteps: <list>"
      — and gates the write behind a single y/N answer (unless `auto`).
   3. Writes the workflow JSON to `$BOTCIRCUITS_WORKFLOWS_DIR` (or
@@ -29,7 +30,7 @@ file format so the LLM can reason about it directly:
       "summary":     "<short prose summary used in the confirm block>",
       "steps": {
         "<step_id>": {
-          "type":       "start" | "agentAction" | "question",
+          "type":       "start" | "agentAction" | "question" | "systemAction",
           "next":       "<step_id>",          # optional, control flow
           "conditions": [                       # optional, control flow
             { "condition": "<NL>", "next": "<step_id>" }
@@ -73,12 +74,16 @@ if TYPE_CHECKING:
 OnBuiltCallback = Callable[[dict], Union[None, Awaitable[None]]]
 
 
-SUPPORTED_STEP_TYPES = {"start", "agentAction", "question"}
+SUPPORTED_STEP_TYPES = {"start", "agentAction", "question", "systemAction"}
 
 # Step types that carry a natural-language `settings.action` and may
 # branch via `conditions`. `question` behaves like `agentAction` for
 # authoring/validation; the engine routes it through `human_feedback`.
-_ACTION_STEP_TYPES = {"agentAction", "question"}
+# `systemAction` carries the same shape but never pauses — the engine
+# records its action text as an audit note and (if it has conditions)
+# branches immediately on already-filled slots; use it for bookkeeping
+# steps that need no model intelligence.
+_ACTION_STEP_TYPES = {"agentAction", "question", "systemAction"}
 
 WORKFLOWS_DIR_ENV = "BOTCIRCUITS_WORKFLOWS_DIR"
 DEFAULT_WORKFLOWS_DIR = ".botcircuits/workflows"

@@ -446,4 +446,8 @@ async def run_workflow(
         "choices": choices,
         "variables": variables,
         "branch_variables": branch_variables,
+        # Audit notes from non-pausing systemAction steps walked this call;
+        # the tool wrapper prepends them to the directive so the recorded
+        # bookkeeping still reaches the transcript.
+        "system_notes": result.get("systemNotes") or [],
     }
