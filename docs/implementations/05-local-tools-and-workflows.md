@@ -123,6 +123,8 @@ The model surface is three tools: `shell_exec` (with `background: true`), `shell
 
 ### 8.6 BotCircuits workflows as tools
 
+> **Architecture note (engine-driven execution).** Workflow execution was inverted: once a workflow tool fires, the **engine owns the loop** and calls the LLM per branch-delimited *segment* with a constant-size, cache-stable prompt — instead of the LLM driving and re-calling the workflow tool to advance one step at a time. The new model is documented in **§8.6.13**; it is the current behavior. Sections **§8.6.2–§8.6.12** below describe the original LLM-driven mechanism (the `pendingBranch` re-entry dance, the empty-args auto-recall, the per-step re-call reminders). That mechanism still exists as the **legacy `run_workflow` fallback** (used when the agent loop doesn't supply a `run_segment` callback), and most of its sub-parts — the engine `executor`, the slot resolver, Layers A/B, the `condition_processor` indexer, `build_workflow` — are **reused unchanged** by the engine path. Read §8.6.13 first for how it all fits together today; treat the auto-recall / re-call-reminder passages in §8.6.6, §8.6.8, §8.6.11, §8.6.12 as historical.
+
 [agent/workflow/](../../src/botcircuits/agent/workflow/). Workflows are loaded from a local directory and each one is exposed as a `LocalTool` on the same `ToolRegistry` that holds the built-ins. From the model's perspective a workflow looks identical to any other tool — same name/description/schema surface — so no provider needs to know workflows exist.
 
 Public functions in [agent/workflow/__init__.py](../../src/botcircuits/agent/workflow/__init__.py):
@@ -131,9 +133,9 @@ Public functions in [agent/workflow/__init__.py](../../src/botcircuits/agent/wor
 |---|---|
 | `fetch_workflows()` | Return the workflow records discovered on disk. |
 | `run_workflow(workflow_name, args, *, session_id, provider, last_assistant_message, last_user_message, normalize_enabled)` | Execute one step of a workflow and return its result. Threads `session_id` through so subsequent calls re-enter the same workflow conversation. `provider` + the message snapshots feed Layer B normalization (see §8.6.4). |
-| `workflow_tool(record, *, provider, normalize_enabled)` | Wrap a single workflow record as a `LocalTool` with closure state (`{"session_id": None}`) for multi-turn execution. The handler accepts an optional `context` dict from the agent loop. |
+| `workflow_tool(record, *, provider, normalize_enabled)` | Wrap a single workflow record as a `LocalTool` with closure state for multi-turn execution. The handler accepts an optional `context` dict from the agent loop; when that context carries a `run_segment` callback it drives the **engine path** (§8.6.13), otherwise it falls back to the legacy per-step `run_workflow`. |
 | `register_workflows(reg, *, provider, normalize_enabled)` | Discover workflows + wrap each as a `LocalTool` and register on `reg`. Returns `(registered_names, skipped_names)`. |
-| `active_workflow_names(reg)` | List the names of workflow tools on `reg` that currently hold a live `session_id` (i.e. are mid-execution). Read by the agent loop to inject a re-entry reminder. |
+| `active_workflow_names(reg)` | List the names of workflow tools on `reg` that currently hold a live `session_id` (engine-driven: the workflow is **paused** waiting on the user). Read by the agent loop to inject a resume reminder. |
 
 #### 8.6.1 Discovery + loader (raw source vs. `.build/` artifact)
 
@@ -411,5 +413,56 @@ The fix inverts the carrier: when the engine pauses on a branching step, the **m
 - **Directive + reminder ask for the re-call** (§8.6.6, §8.6.8): the step directive's footer and the `[Active workflow]` block list the variables (`render_branch_variable_lines`) and instruct: perform the step first, then call `<wf>` with the observed values, omitting anything not actually observed.
 - **Auto-recall demoted to fallback** (§8.6.11): unchanged code — it only fires on turns with no model-issued tool calls, so a turn containing the model's re-call never double-advances, and a model that forgets degrades to the old resolver→B→A path, never to a stall.
 - **No pipeline change**: model-supplied args flow through the existing `raw_args` path, hit the slot resolver's source #1, and get type-coerced by Layer A. Layer B becomes the rare semantic fallback instead of the routine crutch.
+
+#### 8.6.13 Engine-driven execution (inversion of control)
+
+**This is the current execution model.** §8.6.2–§8.6.12 describe the original LLM-driven mechanism, now retained only as the legacy `run_workflow` fallback. Here the **engine owns the loop**: once a workflow tool fires, the engine walks the graph and invokes the LLM as a subroutine per branch-delimited *segment* with a constant-size, cache-stable prompt. The state machine is the memory, not the conversation history.
+
+**Why.** The old design made every step a full provider round-trip replaying the entire growing history (system prompt + all turns + all tool schemas + a mutating `[Active workflow]` reminder) — roughly quadratic in step count, and it defeated prompt caching because the system prompt mutated per step. Advancement also depended on the model *choosing* to re-call the tool (hence the MANDATORY reminder + auto-recall fallback). Inverting control removes both costs: **cost scales with branch decisions (segments), not steps**, and the model can't skip, reorder, or imitate stale history.
+
+**Control flow.**
+
+```
+Agent.chat / chat_stream  (trigger path unchanged: model calls the workflow tool)
+   workflow tool handler  ──►  run_workflow_engine(flow, run_segment=Agent._run_segment, ...)
+                                  │ per segment:
+                                  │   Agent._run_segment(ENGINE_SYSTEM_PROMPT  ← static, cached
+                                  │                      + terse segment payload
+                                  │                      + segment tools + record_slots)
+                                  │   → executes tool calls (Tier 0/1 slot capture)
+                                  │   → evaluate_choices() at the branch boundary (unchanged)
+                                  │   → advance
+                                  ▼
+                         [yield] workflow end  → one-line summary into history
+                                 OR user pause → pending question (parks resume cursor)
+```
+
+**New modules.**
+
+| File | Role |
+|---|---|
+| `engine/segments.py` | `compute_segments(flow)` — pure, build-time. Partitions the graph into maximal runs of consecutive non-branching steps; a step carrying `choices`/`conditions` (or a `question`) terminates a segment. Each segment is `{id, steps, branchStep}`. Emitted into the `.build/` artifact as `flow["segments"]`; the runner falls back to one-step-per-segment when absent. |
+| `engine/runner.py` | `run_workflow_engine(...)` — owns the loop. Walks segments, calls `run_segment` per segment, folds captured slots in, evaluates the terminating branch via the unchanged `evaluate_choices`, persists per-branch **decision records** (`{variable, operator, value, slot_value, slot_source, matched_choice, llm_extracted}`), and **yields** on workflow end or user-interaction pause. `EngineResult` carries `done`/`paused`/`summary`/`question`/`paused_step`/`slots`/`decisions`. |
+| `engine/segment_exec.py` | The static `ENGINE_SYSTEM_PROMPT`, the synthetic `record_slots` capture tool (`build_record_slots_tool`), and the terse per-segment payload builder (`build_segment_user_message`). |
+
+**`Agent._run_segment`** ([agent/core.py](../../src/botcircuits/agent/core.py)). One bounded inner loop of provider call + concurrent tool execution, factored out of `chat`/`chat_stream`. It runs against a static system prompt + a single segment-payload user message + the minimal tool set (the agent's real tools **minus** workflow tools, **plus** `record_slots` when the segment branches). It returns a `SegmentResult(text, captured_slots, paused, question)`. Two interceptions: a `record_slots` call writes into the capture sink (and terminates the branch segment — its branch-relevant work is done); a `human_feedback` call pauses the segment. A `event_sink` argument lets the streaming path forward segment `text_delta`/`tool_call`/`tool_result` events to the UI (drained via an `asyncio.Queue` in `chat_stream`), so a workflow stays live on screen.
+
+**Tiered slot resolution (§3.2 of the design).** The branch variables a segment needs are filled in priority order:
+
+- **Tier 0 — no LLM.** The deterministic `slot_resolver.resolve_slots` (authored choice literals, typed extraction, saved slots) runs in the runner's backfill hook before evaluating a branch.
+- **Tier 1 — same call.** The model reports branch variables via the synthetic `record_slots` tool *in the segment call already being made* — no extra round-trip. Schema built from `variables_for_step`.
+- **Tier 2 — cheap-model fallback.** Only when Tiers 0/1 leave a branch variable unresolved: one extraction call via the existing `variable_normalizer.normalize` (the old "Layer B"). Tagged `tier2_normalization` in usage accounting.
+
+All values still pass Layer-A coercion and the hallucination guard. A branch variable explicitly marked `required: true` that remains unfilled routes to a **clarification pause** (a user-facing question) rather than silently taking the default branch; an *unmarked* (optional) empty falls through to the default as before — so the common "no early-termination value" path isn't over-asked.
+
+**Cache stability.** `ENGINE_SYSTEM_PROMPT` is fixed for the whole run; everything per-segment rides the user message after the cached prefix. The segment tool set is byte-stable across calls. This is what makes each segment call hit the provider prompt cache.
+
+**Summary handoff.** On completion the workflow tool returns a single line — `workflow <name> completed: <outcome>, slots {...}` — into the conversational history, not the step-by-step transcript, keeping post-workflow conversation cheap. On a pause it returns the pending question and parks `{engine_paused_step, engine_slots}` on `_workflow_state`; the next call resumes from that cursor. `session_id != None` now means "paused", which is what `active_workflow_names` reports.
+
+**Token accounting (§7).** `LLMProvider.record_usage` buckets each call into `usage_by_purpose` keyed by a `usage_purpose` tag the callers set: `conversational` (main loop), `segment` (engine segment call), `tier2_normalization` (cheap-model fallback). The fourth tag, `trigger` (the conversational turn that fired a workflow tool), can't be known pre-call — the loop retags it **post-hoc** via `provider.reclassify_call(...)` once a workflow tool is seen in that turn's tool calls (totals unchanged, only the breakdown shifts). The eval runner ([evaluation/runner_agent.py](../../src/botcircuits/agent/workflow/evaluation/runner_agent.py)) captures the per-run delta; the report ([evaluation/report.py](../../src/botcircuits/agent/workflow/evaluation/report.py)) renders it.
+
+**Three-way comparison (§7).** The harness ([evaluation/harness.py](../../src/botcircuits/agent/workflow/evaluation/harness.py)) runs each case three ways and emits all three per case: `workflow_on` (the engine-driven Agent under test), `workflow_off` (the prompt-driven baseline, `enable_workflows=False` + the spec in the system prompt), and `workflow_as_tool_run` (the legacy per-step `run_workflow` driver via `run_case_workflow`, measured standalone — the engine now intercepts advancement, so the pre-inversion path is no longer reachable through a real Agent). The report shows the engine-mode per-purpose token breakdown next to the baseline's, making the projected cost reduction visible per case.
+
+**What's reused unchanged.** `evaluate_choices` (branch evaluation), `slot_resolver` (Tier 0), `variable_normalizer` (Tier 2), `condition_processor` (the indexer), `build_workflow`, the `.build/` loader, and `WorkflowStateContext` / `_SESSIONS`. The inversion is about *who drives the loop*, not a rewrite of the deterministic pieces.
 
 ---

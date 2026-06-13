@@ -406,6 +406,86 @@
         "dataType": "string",
         "description": "Target step id at which the workflow should end (e.g., 'step_1'..'step_9'); compared against the current step id to decide whether to go to end."
       }
+    ],
+    "segments": [
+      {
+        "id": "start",
+        "steps": [
+          "step_1"
+        ],
+        "branchStep": "step_1"
+      },
+      {
+        "id": "end",
+        "steps": [
+          "end"
+        ],
+        "branchStep": null
+      },
+      {
+        "id": "step_2",
+        "steps": [
+          "step_2"
+        ],
+        "branchStep": "step_2"
+      },
+      {
+        "id": "step_3",
+        "steps": [
+          "step_3"
+        ],
+        "branchStep": "step_3"
+      },
+      {
+        "id": "step_4",
+        "steps": [
+          "step_4"
+        ],
+        "branchStep": "step_4"
+      },
+      {
+        "id": "step_5",
+        "steps": [
+          "step_5"
+        ],
+        "branchStep": "step_5"
+      },
+      {
+        "id": "step_6",
+        "steps": [
+          "step_6"
+        ],
+        "branchStep": "step_6"
+      },
+      {
+        "id": "step_7",
+        "steps": [
+          "step_7"
+        ],
+        "branchStep": "step_7"
+      },
+      {
+        "id": "step_8",
+        "steps": [
+          "step_8"
+        ],
+        "branchStep": "step_8"
+      },
+      {
+        "id": "step_9",
+        "steps": [
+          "step_9"
+        ],
+        "branchStep": "step_9"
+      },
+      {
+        "id": "step_10",
+        "steps": [
+          "step_10",
+          "end"
+        ],
+        "branchStep": null
+      }
     ]
   }
 }

@@ -1,5 +1,7 @@
 # Tool System × LLM — workflow tool, auto-recall, and the Option 2 slot fix
 
+> **⚠️ Superseded — historical.** This page documents the original **LLM-driven** workflow execution: the model drove the loop and re-called the workflow tool to advance (auto-recall + the Option 2 re-call-with-slots fix). Workflow execution has since been **inverted** — the engine now owns the loop and calls the LLM per branch-delimited *segment*, so auto-recall and the per-step re-call reminders no longer exist. See **[§8.6.13 Engine-driven execution](../implementations/05-local-tools-and-workflows.md#8613-engine-driven-execution-inversion-of-control)** for the current model. The diagrams below remain useful as the "before" picture that motivated the inversion (token blowup from replaying history per step; advancement depending on the model's choice to re-call).
+
 This page explains, with ASCII diagrams, how the tool system talks to the LLM:
 
 1. [The components and one loop round](#1-components--one-agent-loop-round)

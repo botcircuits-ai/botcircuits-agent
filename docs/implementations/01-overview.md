@@ -62,19 +62,22 @@ src/botcircuits/
 │
 ├── agent/workflow/          # On-disk workflows registered as LocalTools
 │   ├── __init__.py          #   fetch_workflows / run_workflow / workflow_tool /
-│   │                        #   register_workflows / active_workflow_names
-│   ├── local.py             #   discover *.json, drive engine, A-layer coercion
+│   │                        #   register_workflows / active_workflow_names; engine handoff
+│   ├── local.py             #   discover *.json, legacy per-step driver, A-layer coercion
 │   ├── condition_processor.py  # `workflow build` — NL conditions → choices + variables
-│   ├── slot_resolver.py     #   deterministic slot resolution (pre-B) + scalar coercers
-│   ├── variable_normalizer.py  # B-layer LLM extraction on re-entry (unresolved vars only)
+│   ├── slot_resolver.py     #   deterministic slot resolution (Tier 0) + scalar coercers
+│   ├── variable_normalizer.py  # Tier-2 LLM extraction on re-entry (unresolved vars only)
 │   └── engine/              #   trimmed port of botcircuits-runtime-handler STM
-│       ├── executor.py      #     state-machine loop + pendingBranch resolver
+│       ├── runner.py        #     ENGINE-DRIVEN loop: walks segments, branches, yields
+│       ├── segments.py      #     compute_segments(flow) — build-time branch-delimited runs
+│       ├── segment_exec.py  #     static ENGINE_SYSTEM_PROMPT + record_slots + payload
+│       ├── executor.py      #     LEGACY state-machine loop + pendingBranch resolver
 │       ├── state.py         #     WorkflowStateContext (saved session, slots)
 │       ├── utils.py         #     interpolation + next-state helpers
 │       └── handlers/
 │           ├── action.py    #       agentAction handler (action emit + branch setup)
 │           ├── question.py  #       question handler (action emit tagged kind:"question")
-│           └── choice.py    #       evaluate_choices helper, called on re-entry
+│           └── choice.py    #       evaluate_choices helper (reused by the engine runner)
 │
 ├── providers/               # LLM backends, one file per provider
 │   ├── base.py              #   LLMProvider ABC

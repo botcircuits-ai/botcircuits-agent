@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
@@ -37,12 +36,19 @@ from botcircuits.agent.skill import (
 from botcircuits.agent.store import ConversationStore
 from botcircuits.agent.tools import ToolRegistry
 from botcircuits.agent.tools.builtins.human_feedback import HUMAN_FEEDBACK_TOOL
-from botcircuits.agent.workflow import (
-    active_workflow_names,
-    workflow_branch_variables,
-    workflow_finished_quietly,
+from botcircuits.agent.workflow import active_workflow_names
+from botcircuits.agent.workflow.engine.runner import SegmentResult
+from botcircuits.agent.workflow.engine.segment_exec import (
+    ENGINE_SYSTEM_PROMPT,
+    RECORD_SLOTS_TOOL,
+    build_record_slots_tool,
+    build_segment_user_message,
 )
-from botcircuits.agent.workflow.cli_commands import render_branch_variable_lines
+
+#: Inner-loop bound on provider round-trips within a single segment. A
+#: segment's actions may need several tool round-trips (e.g. read a file,
+#: then write one); this caps runaway loops without an LLM driving them.
+_MAX_SEGMENT_TURNS = 25
 
 MAX_AGENT_STEPS = 500
 
@@ -110,53 +116,25 @@ def _available_workflow_tools(reg: ToolRegistry) -> list[tuple[str, str]]:
 def _with_workflow_reminder(system: str | None, reg: ToolRegistry) -> str | None:
     """Append a workflow-related reminder to `system`.
 
-    Three cases:
-      - A workflow is mid-run on a NON-branching step: tell the model to
-        act on the current step only. The agent loop auto-recalls the
-        workflow tool once the model finishes acting (no tool calls
-        left), so the model must NOT call the workflow tool itself —
-        that would double-advance.
-      - A workflow is mid-run on a BRANCHING step (it has pending branch
-        variables): tell the model to act on the step first, then
-        re-call the workflow tool with the values it observed — the
-        slots ride the model's own tool call (the resolver's
-        highest-priority source) instead of being re-derived from a
-        transcript snapshot. The loop's empty-args auto-recall still
-        covers a model that forgets.
-      - No workflow is active but workflow tools exist: remind the model
-        that those tools MUST be called as the first action when the
-        user's request matches one — do NOT ask clarifying questions in
-        prose first, because the workflow itself drives the conversation.
-        Without this, long histories cause the model to imitate its own
-        prior "ask topic, then call tool" pattern and skip the tool call.
+    In engine-driven mode the ENGINE owns the loop once a workflow starts,
+    so the only reminders that matter are about *triggering* and *resuming*:
+
+      - A workflow is paused waiting on the user (its `session_id` is set
+        during an engine user-interaction pause): the user's latest message
+        is the answer — re-call the workflow tool so the engine resumes.
+      - No workflow is active but workflow tools exist: calling the matching
+        tool MUST be the first action when the user's request matches one —
+        don't ask clarifying questions in prose first; the workflow drives
+        the conversation itself.
     """
     names = active_workflow_names(reg)
     if names:
         name = names[0]
-        branch_lines = render_branch_variable_lines(
-            workflow_branch_variables(reg, name)
+        reminder = (
+            f"\n\n[Active workflow] The workflow '{name}' is paused waiting "
+            f"for the user's reply. Treat the user's latest message as that "
+            f"answer and call '{name}' again to resume the workflow."
         )
-        if branch_lines:
-            reminder = (
-                f"\n\n[Active workflow] The workflow tool '{name}' is "
-                f"mid-execution on a branching step. FIRST perform the "
-                f"action of the current step (call a tool, send a reply, "
-                f"or call 'human_feedback' if the step asks the user a "
-                f"question — then wait for their reply). Once the step is "
-                f"genuinely complete, call '{name}' passing the values you "
-                f"observed for these arguments — they decide the next "
-                f"step. Omit any you don't actually have; never invent "
-                f"values:\n{branch_lines}"
-            )
-        else:
-            reminder = (
-                f"\n\n[Active workflow] The workflow tool '{name}' is "
-                f"mid-execution. Perform ONLY the action of the current "
-                f"step (call a tool, send a reply, or call "
-                f"'human_feedback' if the step asks the user a question). "
-                f"Do NOT call '{name}' yourself — the next step is "
-                f"requested for you automatically once you finish acting."
-            )
         return (system or "") + reminder
 
     available = _available_workflow_tools(reg)
@@ -178,6 +156,35 @@ def _with_workflow_reminder(system: str | None, reg: ToolRegistry) -> str | None
         "not from you skipping the call."
     )
     return (system or "") + reminder
+
+
+def _fired_workflow_tool(reg: ToolRegistry, tool_calls: list[ToolCall]) -> bool:
+    """True when any of this turn's tool calls invoked a workflow tool —
+    used to retag that turn's conversational provider call as `trigger`
+    in the per-purpose usage breakdown (§7)."""
+    names = {tc.name for tc in tool_calls}
+    for tool in reg.all():
+        if getattr(tool, "_workflow_state", None) is not None and tool.name in names:
+            return True
+    return False
+
+
+def _segment_stream_events(kind: str, payload, sid: str):
+    """Map an engine-segment sink event to StreamEvents for the UI.
+
+    The segment sink (passed to `Agent._run_segment`) emits `("text", str)`,
+    `("tool_call", ToolCall)`, and `("tool_result", (ToolCall, out, err))`;
+    we translate those to the same StreamEvent shapes the main loop yields,
+    so a workflow's internal segment calls look live to the UI.
+    """
+    if kind == "text":
+        yield StreamEvent(type="text_delta", text=payload, session_id=sid)
+    elif kind == "tool_call":
+        yield StreamEvent(type="tool_call", tool_call=payload, session_id=sid)
+    elif kind == "tool_result":
+        tc, out, err = payload
+        yield StreamEvent(type="tool_result", tool_call_id=tc.id,
+                          text=out, is_error=err, session_id=sid)
 
 
 def _human_feedback_pause(
@@ -206,52 +213,6 @@ def _human_feedback_pause(
             question = tc.arguments.get("question") or ""
         return question or output
     return None
-
-
-def _quiet_workflow_finish(
-    reg: ToolRegistry, tool_calls: list[ToolCall]
-) -> bool:
-    """True when this round was solely loop-synthesized workflow recalls and
-    every recalled workflow finished with nothing left to perform (trailing
-    engine-side systemActions only). The model's previous text — the one
-    that made the turn look terminal before the recall — already IS the
-    final answer, so another provider call would only buy a restatement."""
-    if not tool_calls:
-        return False
-    if not all(tc.id.startswith(_AUTO_RECALL_ID_PREFIX) for tc in tool_calls):
-        return False
-    return all(
-        workflow_finished_quietly(reg, tc.name) for tc in tool_calls
-    )
-
-
-def _auto_recall_calls(reg: ToolRegistry) -> list[ToolCall]:
-    """Synthetic workflow tool calls that advance every active workflow.
-
-    Called when the model produced no tool calls of its own but a
-    workflow is still mid-run: the loop injects these to fetch the next
-    step (re-entry runs slot normalization inside the workflow tool),
-    instead of relying on the model to remember to re-call it. Empty
-    args — the resolver/normalizer fall back to the recent transcript.
-
-    For branching steps this is the FALLBACK path only: the step
-    directive and the [Active workflow] reminder ask the model to
-    re-call the workflow tool itself with the branch variables as args
-    (which suppresses auto-recall, since the turn then has tool calls).
-    A model that forgets degrades to this empty-args recall, never to a
-    stall.
-
-    Normally there's exactly one active workflow, but we handle several
-    defensively (one call each).
-    """
-    return [
-        ToolCall(
-            id=f"{_AUTO_RECALL_ID_PREFIX}{uuid.uuid4().hex[:8]}",
-            name=name,
-            arguments={},
-        )
-        for name in active_workflow_names(reg)
-    ]
 
 
 class Agent:
@@ -472,6 +433,167 @@ class Agent:
         ]
         return Message(role="user", blocks=result_blocks)
 
+    # -- engine-driven workflow segment execution --------------------------
+
+    def _engine_tools(self, record_slots) -> list:
+        """Tools exposed to a segment call: the agent's real tools (built-ins,
+        MCP, skills) MINUS workflow tools — the engine owns advancement now,
+        so the model must not re-enter a workflow tool — PLUS the synthetic
+        `record_slots` capture tool when the segment branches."""
+        base = [t for t in self.tools.all()
+                if getattr(t, "_workflow_state", None) is None]
+        if record_slots is not None:
+            base.append(record_slots)
+        return base
+
+    async def _run_segment(
+        self,
+        *,
+        actions: list[str],
+        branch_variables: list[dict],
+        system_notes: list[str],
+        slots: dict,
+        event_sink=None,
+    ) -> SegmentResult:
+        """Run ONE branch-delimited segment: a constant-size cached system
+        prompt + the segment payload, looped over provider calls until the
+        model stops asking for tools (or pauses for the user).
+
+        Returns the captured branch slots (via the synthetic `record_slots`
+        tool, Tier 1), the final assistant text, and a pause flag when the
+        model called `human_feedback`. The engine runner (`run_workflow_engine`)
+        consumes this to evaluate the branch and advance.
+
+        `event_sink`, when provided, is an async callable the streaming path
+        passes so segment `text_delta`/`tool_call`/`tool_result` events still
+        reach the UI. When None, this runs non-streaming.
+        """
+        captured: dict = {}
+        record_slots = (
+            build_record_slots_tool(branch_variables, captured)
+            if branch_variables else None
+        )
+        engine_tools = self._engine_tools(record_slots)
+        # A throwaway registry so `record_slots` is runnable without
+        # polluting the agent's real registry. Real tools still execute via
+        # self.tools; record_slots is intercepted below.
+        user_msg = build_segment_user_message(
+            actions, branch_variables, system_notes,
+        )
+        messages: list[Message] = [
+            Message(role="user", blocks=[{"type": "text", "text": user_msg}]),
+        ]
+
+        final_text = ""
+        for _ in range(_MAX_SEGMENT_TURNS):
+            self.provider.usage_purpose = "segment"
+            resp = await self.provider.complete(
+                system=ENGINE_SYSTEM_PROMPT,
+                messages=messages,
+                tools=engine_tools if self.mode != "react" else [],
+                hosted_mcp=self.hosted_mcp, skills=self.skills,
+                max_tokens=self.max_tokens,
+            )
+            text, tool_calls, terminal = self._interpret(resp)
+            if text:
+                final_text = text
+
+            assistant_blocks: list[dict] = []
+            if text:
+                assistant_blocks.append({"type": "text", "text": text})
+            for tc in tool_calls:
+                assistant_blocks.append({
+                    "type": "tool_call", "id": tc.id, "name": tc.name,
+                    "arguments": tc.arguments,
+                    "thought_signature": getattr(tc, "thought_signature", None),
+                })
+            messages.append(Message(role="assistant", blocks=assistant_blocks))
+
+            if event_sink is not None and text:
+                await event_sink("text", text)
+            for tc in tool_calls:
+                if event_sink is not None:
+                    await event_sink("tool_call", tc)
+
+            if terminal:
+                break
+
+            # Execute tool calls. `record_slots` is intercepted (its handler
+            # writes into `captured`); `human_feedback` pauses the segment;
+            # everything else runs on the agent's real registry.
+            results: list[tuple[str, bool]] = []
+            paused_question: str | None = None
+            recorded_slots = False
+            for tc in tool_calls:
+                if tc.name == RECORD_SLOTS_TOOL and record_slots is not None:
+                    out, err = await self.tools_run_synthetic(record_slots, tc)
+                    recorded_slots = True
+                elif tc.name == HUMAN_FEEDBACK_TOOL:
+                    out, err = await self.tools.run(tc.name, tc.arguments, None)
+                    paused_question = _human_feedback_pause([tc], [(out, err)])
+                else:
+                    out, err = await self.tools.run(tc.name, tc.arguments, {
+                        "session_id": None,
+                    })
+                results.append((out, err))
+                if event_sink is not None:
+                    await event_sink("tool_result", (tc, out, err))
+
+            messages.append(self._result_message(tool_calls, results))
+
+            if paused_question is not None:
+                return SegmentResult(
+                    text=final_text, captured_slots=dict(captured),
+                    paused=True, question=paused_question,
+                )
+
+            # `record_slots` is the segment's terminal signal on a branching
+            # segment: once the model reports the branch values, the engine
+            # has what it needs to decide the next step, so we stop spending
+            # provider round-trips on this segment. (Non-branching segments
+            # have no record_slots tool and terminate naturally when the
+            # model stops calling tools.)
+            if recorded_slots:
+                break
+
+        return SegmentResult(text=final_text, captured_slots=dict(captured))
+
+    def _make_segment_runner(self, event_sink=None):
+        """A `run_segment` callable for the tool context, bound to this
+        agent. Engine-disabled agents return None so the workflow tool falls
+        back to its legacy per-step path.
+
+        `event_sink`, when given (streaming path), forwards segment events
+        so the UI stays live during an engine-driven workflow.
+        """
+        if not self.enable_workflows:
+            return None
+
+        async def _runner(*, actions, branch_variables, system_notes, slots):
+            return await self._run_segment(
+                actions=actions,
+                branch_variables=branch_variables,
+                system_notes=system_notes,
+                slots=slots,
+                event_sink=event_sink,
+            )
+        return _runner
+
+    @staticmethod
+    async def tools_run_synthetic(tool, tc: ToolCall) -> tuple[str, bool]:
+        """Run a synthetic (engine-only) tool not registered on the agent's
+        registry — currently just `record_slots`."""
+        import inspect as _inspect
+        import json as _json
+        try:
+            res = tool.handler(tc.arguments or {})
+            if _inspect.isawaitable(res):
+                res = await res
+            text = res if isinstance(res, str) else _json.dumps(res, default=str)
+            return text, False
+        except Exception as e:  # pragma: no cover - defensive
+            return f"{type(e).__name__}: {e}", True
+
     # -- non-streaming chat -------------------------------------------------
 
     async def chat(self, user_input: str, session_id: str | None = None,
@@ -489,6 +611,7 @@ class Agent:
             ))
 
             for _ in range(self.max_steps):
+                self.provider.usage_purpose = "conversational"
                 resp = await self.provider.complete(
                     system=self._system_with_reminder(convo.system),
                     messages=convo.messages,
@@ -496,19 +619,11 @@ class Agent:
                     hosted_mcp=self.hosted_mcp, skills=self.skills,
                     max_tokens=self.max_tokens,
                 )
+                # Snapshot this call's usage so it can be retagged `trigger`
+                # below if it turns out to have fired a workflow tool.
+                conv_call = self.provider.last_call_usage()
 
                 text, tool_calls, terminal = self._interpret(resp)
-
-                # The model stopped issuing tool calls. If a workflow is
-                # still mid-run, don't end the turn — auto-recall the
-                # workflow tool to advance to the next step (slot
-                # normalization happens inside that call). Only when no
-                # workflow is active is an empty-tool turn truly terminal.
-                if terminal and self.enable_workflows:
-                    recall = _auto_recall_calls(self.tools)
-                    if recall:
-                        tool_calls = recall
-                        terminal = False
 
                 assistant_blocks: list[dict] = []
                 if text:
@@ -528,10 +643,15 @@ class Agent:
 
                 # Build tool-invocation context once per turn. The same
                 # snapshot is handed to every tool call in this round.
+                # `run_segment` is the engine-driven workflow callback: when
+                # a workflow tool fires, the ENGINE owns its loop (calling
+                # this per branch-delimited segment), instead of the model
+                # re-calling the tool to advance one step at a time.
                 tool_context = {
                     "last_assistant_message": _last_assistant_text(convo.messages),
                     "last_user_message": _last_user_text(convo.messages),
                     "session_id": convo.session_id,
+                    "run_segment": self._make_segment_runner(),
                 }
                 # Run all tool calls concurrently (react mode yields exactly
                 # one, native may yield several).
@@ -539,18 +659,19 @@ class Agent:
                     self.tools.run(tc.name, tc.arguments, tool_context)
                     for tc in tool_calls
                 ])
+                # If this turn's call fired a workflow tool, retag its tokens
+                # as `trigger` (the workflow engine's own segment calls are
+                # already tagged `segment`).
+                if _fired_workflow_tool(self.tools, tool_calls):
+                    self.provider.reclassify_call(conv_call, "trigger")
                 convo.messages.append(self._result_message(tool_calls, results))
-
-                # The loop's own recalls all came back "workflow finished,
-                # nothing to perform" — the model's text from this round is
-                # already the final answer; end the turn without another
-                # provider call.
-                if _quiet_workflow_finish(self.tools, tool_calls):
-                    return text, convo.session_id
 
                 # If the model asked the user a question via human_feedback,
                 # pause the loop: surface the question as the reply and hand
                 # control back to the user. Their next message resumes.
+                # (An engine-driven workflow surfaces its own pauses through
+                # the workflow tool's RESULT — the model relays it and the
+                # turn ends naturally on the next pass.)
                 paused = _human_feedback_pause(tool_calls, results)
                 if paused is not None:
                     return paused, convo.session_id
@@ -583,6 +704,7 @@ class Agent:
                 hit_step_limit = True
                 for _ in range(self.max_steps):
                     final_resp: LLMResponse | None = None
+                    self.provider.usage_purpose = "conversational"
                     async for kind, payload in self.provider.stream(
                         system=self._system_with_reminder(convo.system),
                         messages=convo.messages,
@@ -596,18 +718,9 @@ class Agent:
                         elif kind == "final":
                             final_resp = payload
                     assert final_resp is not None, "provider didn't yield 'final'"
+                    conv_call = self.provider.last_call_usage()
 
                     text, tool_calls, terminal = self._interpret(final_resp)
-
-                    # Auto-advance an active workflow: if the model stopped
-                    # issuing tool calls but a workflow is still mid-run,
-                    # inject a recall of the workflow tool (slot
-                    # normalization runs inside it) instead of ending.
-                    if terminal and self.enable_workflows:
-                        recall = _auto_recall_calls(self.tools)
-                        if recall:
-                            tool_calls = recall
-                            terminal = False
 
                     # Persist the assistant turn.
                     assistant_blocks: list[dict] = []
@@ -640,13 +753,23 @@ class Agent:
                         hit_step_limit = False
                         break
 
-                    # Build tool-invocation context once per turn.
+                    # Build tool-invocation context once per turn. An
+                    # engine-driven workflow tool runs the engine loop inside
+                    # its handler; its segment events flow back through this
+                    # queue so the UI stays live during the workflow.
+                    segment_events: asyncio.Queue = asyncio.Queue()
+
+                    async def _segment_sink(kind: str, payload):
+                        await segment_events.put((kind, payload))
+
                     tool_context = {
                         "last_assistant_message":
                             _last_assistant_text(convo.messages),
                         "last_user_message":
                             _last_user_text(convo.messages),
                         "session_id": sid,
+                        "run_segment":
+                            self._make_segment_runner(event_sink=_segment_sink),
                     }
 
                     # Execute tools concurrently; surface each as it lands.
@@ -659,12 +782,43 @@ class Agent:
                     tasks = [asyncio.create_task(_run(tc))
                              for tc in tool_calls]
                     results: list[tuple[ToolCall, str, bool]] = []
-                    for coro in asyncio.as_completed(tasks):
-                        tc, out, err = await coro
-                        results.append((tc, out, err))
-                        yield StreamEvent(type="tool_result",
-                                          tool_call_id=tc.id, text=out,
-                                          is_error=err, session_id=sid)
+                    pending = set(tasks)
+                    drainer = asyncio.ensure_future(segment_events.get())
+                    while pending or not segment_events.empty() or drainer is not None:
+                        if drainer is None:
+                            drainer = asyncio.ensure_future(segment_events.get())
+                        done, _ = await asyncio.wait(
+                            pending | {drainer},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if drainer in done:
+                            kind, payload = drainer.result()
+                            drainer = None
+                            for ev in _segment_stream_events(kind, payload, sid):
+                                yield ev
+                            continue
+                        for t in (done & pending):
+                            pending.discard(t)
+                            tc, out, err = t.result()
+                            results.append((tc, out, err))
+                            yield StreamEvent(type="tool_result",
+                                              tool_call_id=tc.id, text=out,
+                                              is_error=err, session_id=sid)
+                        if not pending:
+                            # Tools done; drain any remaining buffered events
+                            # then stop waiting on the queue.
+                            if drainer is not None:
+                                drainer.cancel()
+                                drainer = None
+                            while not segment_events.empty():
+                                kind, payload = segment_events.get_nowait()
+                                for ev in _segment_stream_events(kind, payload, sid):
+                                    yield ev
+
+                    # Retag this turn's conversational call as `trigger` if
+                    # it fired a workflow tool (§7 token accounting).
+                    if _fired_workflow_tool(self.tools, tool_calls):
+                        self.provider.reclassify_call(conv_call, "trigger")
 
                     # Re-pair results to calls in original order, then hand
                     # to _result_message (structured blocks for native, a
@@ -673,15 +827,6 @@ class Agent:
                     ordered = [by_id[tc.id] for tc in tool_calls]
                     convo.messages.append(
                         self._result_message(tool_calls, ordered))
-
-                    # The loop's own recalls all came back "workflow
-                    # finished, nothing to perform" — the streamed text from
-                    # this round already is the final answer; end the turn
-                    # without another provider call.
-                    if _quiet_workflow_finish(self.tools, tool_calls):
-                        final_text = text
-                        hit_step_limit = False
-                        break
 
                     # human_feedback pauses the loop: surface its question
                     # as the final reply and hand control back to the user

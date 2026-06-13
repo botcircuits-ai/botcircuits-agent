@@ -1,15 +1,13 @@
-"""Fallback verification for Option 2 (model re-calls with args).
+"""Engine-driven advancement + legacy resolver-parity guarantees.
 
-Two guarantees when the model FORGETS to re-call the workflow tool on a
-branching step:
-
-  1. The agent loop still advances the workflow deterministically — a
-     terminal model turn with an active workflow injects an empty-args
-     auto-recall (`wf-autorecall-*`), exactly as before Option 2.
-  2. That empty-args re-entry runs the same resolution pipeline as the
-     pre-Option-2 implementation: the deterministic slot resolver sees
-     `raw_args={}` + the last user message, and Layer B still fires for
-     whatever the resolver leaves unresolved.
+  1. Engine-driven: when a workflow tool fires, the ENGINE owns the loop
+     and advances the workflow itself — the model never has to re-call
+     the tool to step it forward. A branching workflow resolves its
+     branch from the slots captured in the segment call.
+  2. Legacy `run_workflow` path (still used when the engine `run_segment`
+     callback isn't supplied) hands the slot resolver `raw_args={}` plus
+     the last user message, and Layer B still fires for whatever the
+     resolver leaves unresolved.
 """
 
 from __future__ import annotations
@@ -18,9 +16,10 @@ import asyncio
 import json
 
 import botcircuits.agent.workflow.local as wf_local
-from botcircuits.agent.core import Agent, _AUTO_RECALL_ID_PREFIX
+from botcircuits.agent.core import Agent
 from botcircuits.agent.tools import ToolRegistry
 from botcircuits.agent.workflow import workflow_tool
+from botcircuits.agent.workflow.engine.segment_exec import RECORD_SLOTS_TOOL
 from botcircuits.providers.base import LLMProvider
 from botcircuits.types import LLMResponse, ToolCall
 
@@ -110,24 +109,66 @@ def _call(name: str, args: dict) -> LLMResponse:
     )
 
 
-def test_loop_auto_recalls_when_model_forgets(tmp_path, monkeypatch):
-    """End-to-end through the REAL agent loop: the model kicks off the
-    workflow, is asked (directive + reminder) to re-call with the branch
-    values, ignores it — and the loop's empty-args auto-recall still
-    advances the workflow, branching deterministically via the slot
-    resolver (no Layer B: the workflow tool is registered provider-less).
+def test_engine_drives_workflow_end_to_end(tmp_path, monkeypatch):
+    """End-to-end through the REAL agent loop in engine-driven mode: the
+    model kicks off the workflow with one tool call, then the ENGINE owns
+    the loop. It calls back per segment; the segment call performs the s1
+    action and reports `order_status` via the synthetic `record_slots`
+    tool, so the engine branches deterministically to s_delivered, runs
+    it, and completes — all inside the single workflow-tool call. The model
+    never re-calls the workflow tool to advance.
     """
     monkeypatch.setenv(wf_local.WORKFLOWS_DIR_ENV, str(tmp_path))
     _write_build(tmp_path, _branching_record())
     wf_local._SESSIONS.clear()
 
-    provider = ScriptedProvider([
-        _call("wf_branch", {}),       # round 1: model starts the workflow
-        _text("I checked the order."),  # round 2: model acts, FORGETS to re-call
-        _text("all done"),            # round 3: workflow finished → terminal
-    ])
+    from botcircuits.agent.workflow.engine.segment_exec import ENGINE_SYSTEM_PROMPT
+
+    class RoutingProvider(LLMProvider):
+        """Routes by system prompt: the engine-mode prompt → segment
+        responses (perform action, record slots); anything else → the main
+        conversational loop responses."""
+        name = "routing"
+        model = "test"
+
+        def __init__(self):
+            self.segment_calls = 0
+
+        async def complete(self, system, messages, tools, hosted_mcp,
+                           skills, max_tokens):
+            if system == ENGINE_SYSTEM_PROMPT:
+                self.segment_calls += 1
+                # Has this segment a record_slots tool? Then it's the
+                # branching s1 segment — report delivered. Else just act.
+                has_record = any(
+                    getattr(t, "name", "") == RECORD_SLOTS_TOOL for t in tools
+                )
+                if has_record:
+                    return LLMResponse(
+                        text="checked", stop_reason="tool_use", raw=None,
+                        tool_calls=[ToolCall(
+                            id=f"rs{self.segment_calls}", name=RECORD_SLOTS_TOOL,
+                            arguments={"order_status": "delivered"})],
+                    )
+                return _text("acted on the segment")
+            # Main loop: round 1 triggers the workflow; round 2 (after the
+            # summary result) is the final reply.
+            triggered = any(
+                b.get("type") == "tool_call" and b.get("name") == "wf_branch"
+                for m in messages if m.role == "assistant" for b in m.blocks
+            )
+            if not triggered:
+                return _call("wf_branch", {})
+            return _text("all done")
+
+        async def stream(self, system, messages, tools, hosted_mcp,
+                         skills, max_tokens):
+            yield ("final", await self.complete(
+                system, messages, tools, hosted_mcp, skills, max_tokens))
+
+    provider = RoutingProvider()
     reg = ToolRegistry()
-    reg.register(workflow_tool(_branching_record()))  # provider=None → no Layer B
+    reg.register(workflow_tool(_branching_record()))
 
     async def run():
         async with Agent(provider=provider, tools=reg,
@@ -136,35 +177,19 @@ def test_loop_auto_recalls_when_model_forgets(tmp_path, monkeypatch):
 
     (reply, sid), agent = asyncio.run(run())
     assert reply == "all done"
+    # The engine made at least the s1 (branching) segment call.
+    assert provider.segment_calls >= 1
 
+    # The workflow tool's result (the summary line) shows the workflow
+    # completed — proving the engine advanced past the branch on its own.
     convo = agent.store.get_or_create(sid)
-    auto_calls = [
-        b for m in convo.messages if m.role == "assistant"
+    wf_results = [
+        b["content"] for m in convo.messages if m.role == "user"
         for b in m.blocks
-        if b.get("type") == "tool_call"
-        and b["id"].startswith(_AUTO_RECALL_ID_PREFIX)
+        if b.get("type") == "tool_result" and b.get("name") == "wf_branch"
     ]
-    # Exactly one loop-injected recall, with EMPTY args — deterministic
-    # fallback, not dependent on anything the model did or didn't pass.
-    assert len(auto_calls) == 1
-    assert auto_calls[0]["name"] == "wf_branch"
-    assert auto_calls[0]["arguments"] == {}
-
-    # The recall's result shows the branch resolved to s_delivered: the
-    # resolver matched the authored choice literal in the user's message.
-    recall_results = [
-        b for m in convo.messages if m.role == "user"
-        for b in m.blocks
-        if b.get("type") == "tool_result"
-        and b["tool_call_id"] == auto_calls[0]["id"]
-    ]
-    assert len(recall_results) == 1
-    assert "tell the user it was delivered" in recall_results[0]["content"]
-
-    # Round 2's system prompt DID ask the model to re-call with values
-    # (which it ignored) — proving the fallback covered a real "forgot".
-    assert "call 'wf_branch' passing the values" in provider.seen_systems[1]
-    assert "- order_status (string): delivery state" in provider.seen_systems[1]
+    assert wf_results
+    assert "completed" in wf_results[0]
 
 
 def test_empty_args_recall_invokes_resolver_like_before(tmp_path, monkeypatch):

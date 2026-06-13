@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 
 from botcircuits.agent.workflow.condition_processor import generate_expressions_and_variables
+from botcircuits.agent.workflow.engine.segments import compute_segments
 from botcircuits.agent.workflow.evaluation import (
     EvalDatasetError,
     discover_datasets,
@@ -178,6 +179,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
     except Exception as e:
         out(C.red(f"[workflow] build failed: {type(e).__name__}: {e}"))
         return 1
+    else:
+        # Branch-delimited segments are derived AFTER the indexer so the
+        # `choices` it emits are present. The engine runner reads
+        # `flow["segments"]` to batch consecutive non-branching steps into
+        # one LLM call.
+        flow["segments"] = compute_segments(flow)
     finally:
         # `make_provider` builds a fresh provider for this run; release any
         # async clients it opened.

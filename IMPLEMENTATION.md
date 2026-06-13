@@ -11,7 +11,7 @@ It was split out of a single large file into topic-scoped pages under [docs/impl
 | Page | Sections | What's inside |
 |---|---|---|
 | [1. Overview, Package Layout & Architecture](docs/implementations/01-overview.md) | §1–§3 | Goals & non-goals, the `src/botcircuits/` tree, and the high-level layer diagram (Agent → Provider → MCP/Skills/Workflows/Memory) including the workflow **guardrail** box. |
-| [2. Data Model & The Agent Loop](docs/implementations/02-data-model-and-agent-loop.md) | §4–§5 | The normalized `Message`/`ToolCall`/`LLMResponse` block model, and the multi-round loop: concurrent tools, `max_steps`, per-conversation lock, workflow auto-recall + human-feedback pause + reminders. |
+| [2. Data Model & The Agent Loop](docs/implementations/02-data-model-and-agent-loop.md) | §4–§5 | The normalized `Message`/`ToolCall`/`LLMResponse` block model, and the multi-round loop: concurrent tools, `max_steps`, per-conversation lock, engine-driven workflow handoff (`run_segment`) + human-feedback pause + reminders. |
 | [3. Provider Abstraction](docs/implementations/03-providers.md) | §6 | The `LLMProvider` ABC and the Anthropic / OpenAI / Gemini adapters. |
 | [4. MCP: Hosted vs Local](docs/implementations/04-mcp.md) | §7 | `MCPServer` config, the `LocalMCPManager`, auto-promotion, and `mcp.json` wiring. |
 | [5. Local Tools & Workflows](docs/implementations/05-local-tools-and-workflows.md) | §8 | The `builtins/` package + per-tool config, the code-gen tool surface, background shells, and the full BotCircuits **workflow** subsystem (engine, normalization, `build_workflow`, `human_feedback`). |

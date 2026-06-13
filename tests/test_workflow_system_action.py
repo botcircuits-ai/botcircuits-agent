@@ -21,7 +21,6 @@ import asyncio
 import json
 
 import botcircuits.agent.workflow.local as wf_local
-from botcircuits.agent.core import _quiet_workflow_finish
 from botcircuits.agent.tools import ToolRegistry
 from botcircuits.agent.workflow import (
     workflow_finished_quietly,
@@ -202,18 +201,11 @@ def test_workflow_tool_prepends_notes_and_flags_quiet_finish(tmp_path, monkeypat
 
     out3 = asyncio.run(tool.handler({}))
     # Terminal systemAction → quiet finish: notes + "finished" fallback.
+    # (Legacy per-step path: still exercised when the engine `run_segment`
+    # callback isn't supplied in the tool context.)
     assert "Processing complete." in out3
     assert "finished with no further actions" in out3
     assert workflow_finished_quietly(reg, "wf_sys")
-
-    # The loop helper: a round of pure auto-recalls that all finished
-    # quietly ends the turn; a model-issued call never does.
-    from botcircuits.types import ToolCall as TC
-    auto = [TC(id="wf-autorecall-1", name="wf_sys", arguments={})]
-    model = [TC(id="toolu_123", name="wf_sys", arguments={})]
-    assert _quiet_workflow_finish(reg, auto) is True
-    assert _quiet_workflow_finish(reg, model) is False
-    assert _quiet_workflow_finish(reg, []) is False
 
 
 def test_render_system_notes_block():

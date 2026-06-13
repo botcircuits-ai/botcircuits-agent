@@ -70,6 +70,16 @@ class AgentRunResult:
     workflow_invocations: int = 0
     error: str | None = None
     elapsed_s: float = 0.0
+    # Real token usage for THIS run, captured as a delta around the agent
+    # drive. `usage_by_purpose` breaks the input/output tokens down by call
+    # intent (trigger | segment | tier2_normalization | conversational) so
+    # the §7 comparison can show where engine mode spends — and saves —
+    # tokens vs. the prompt-driven baseline.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    llm_calls: int = 0
+    usage_by_purpose: dict = field(default_factory=dict)
 
 
 _BASELINE_SYSTEM_PREAMBLE = """\
@@ -149,6 +159,7 @@ async def _drive_agent(
     out = AgentRunResult(
         case_id=case.id, workflow=case.workflow, mode=mode_label,
     )
+    usage_before = _usage_snapshot(provider)
     try:
         # default_registry brings the built-in tools (read_file,
         # write_file, shell, etc.). The agent in production uses
@@ -205,8 +216,51 @@ async def _drive_agent(
     except Exception as e:
         out.error = f"{type(e).__name__}: {e}"
 
+    _apply_usage_delta(out, provider, usage_before)
     out.elapsed_s = time.perf_counter() - started
     return out
+
+
+def _usage_snapshot(provider: LLMProvider) -> dict:
+    """Read the provider's cumulative usage so a per-run delta can be
+    computed (the harness shares one provider across runs)."""
+    by_purpose = getattr(provider, "usage_by_purpose", {}) or {}
+    return {
+        "input": getattr(provider, "usage_input_tokens", 0),
+        "output": getattr(provider, "usage_output_tokens", 0),
+        "cache_read": getattr(provider, "usage_cache_read_tokens", 0),
+        "calls": getattr(provider, "usage_llm_calls", 0),
+        "by_purpose": {
+            k: dict(v) for k, v in by_purpose.items()
+        },
+    }
+
+
+def _apply_usage_delta(
+    out: AgentRunResult, provider: LLMProvider, before: dict,
+) -> None:
+    """Fold the post-run minus pre-run usage onto `out`, including the
+    per-purpose breakdown (§7 token logging)."""
+    out.input_tokens = getattr(provider, "usage_input_tokens", 0) - before["input"]
+    out.output_tokens = (
+        getattr(provider, "usage_output_tokens", 0) - before["output"]
+    )
+    out.cache_read_tokens = (
+        getattr(provider, "usage_cache_read_tokens", 0) - before["cache_read"]
+    )
+    out.llm_calls = getattr(provider, "usage_llm_calls", 0) - before["calls"]
+
+    after = getattr(provider, "usage_by_purpose", {}) or {}
+    delta: dict = {}
+    for purpose, bucket in after.items():
+        prev = before["by_purpose"].get(purpose, {})
+        d = {
+            k: bucket.get(k, 0) - prev.get(k, 0)
+            for k in ("input", "output", "cache_read", "cache_write", "calls")
+        }
+        if any(v for v in d.values()):
+            delta[purpose] = d
+    out.usage_by_purpose = delta
 
 
 async def run_case_agent_with_workflow(

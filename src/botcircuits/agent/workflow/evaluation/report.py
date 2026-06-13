@@ -31,6 +31,23 @@ def _truncate(s: str, n: int = _FINAL_TEXT_PREVIEW) -> str:
     return s[:n] + "…"
 
 
+def _fmt_usage(usage: dict) -> str:
+    """One-line token summary with the per-purpose breakdown (§7)."""
+    calls = usage.get("llm_calls", 0)
+    inp = usage.get("input_tokens", 0)
+    outp = usage.get("output_tokens", 0)
+    cache = usage.get("cache_read_tokens", 0)
+    head = f"{calls} calls, in={inp} out={outp} cache_read={cache}"
+    by_purpose = usage.get("by_purpose") or {}
+    if by_purpose:
+        parts = [
+            f"{p}:{b.get('calls', 0)}c/{b.get('input', 0)}in"
+            for p, b in sorted(by_purpose.items())
+        ]
+        head += "  [" + ", ".join(parts) + "]"
+    return head
+
+
 def render_text(report: DatasetReport) -> str:
     """Compact two-column comparison + per-case detail."""
     wf = report.workflow_summary
@@ -103,6 +120,9 @@ def render_text(report: DatasetReport) -> str:
             f"      workflow_on  tools: {wf_tools} "
             f"(workflow invocations: {wf_invocations})"
         )
+        wf_usage = wf_run.get("usage") or {}
+        if wf_usage.get("llm_calls"):
+            lines.append(f"      workflow_on  tokens: {_fmt_usage(wf_usage)}")
         if wf_run.get("error"):
             lines.append(f"      workflow_on  error: {wf_run['error']}")
         if pr_run:
@@ -111,8 +131,23 @@ def render_text(report: DatasetReport) -> str:
             )
             pr_tools = pr_run.get("tool_calls") or []
             lines.append(f"      workflow_off tools: {pr_tools}")
+            pr_usage = pr_run.get("usage") or {}
+            if pr_usage.get("llm_calls"):
+                lines.append(f"      workflow_off tokens: {_fmt_usage(pr_usage)}")
             if pr_run.get("error"):
                 lines.append(f"      workflow_off error: {pr_run['error']}")
+
+        # Third column (§7): the legacy per-step workflow-as-tool path.
+        legacy = c.get("workflow_as_tool_run")
+        if legacy:
+            lg_score = (legacy.get("score") or {}).get("score")
+            lg_score_s = f"{lg_score:.2f}" if isinstance(lg_score, float) else "n/a"
+            lines.append(
+                f"      legacy(wf-as-tool) score={lg_score_s}  "
+                f"reply: {_truncate(legacy.get('final_action', ''))}"
+            )
+            if legacy.get("error"):
+                lines.append(f"      legacy(wf-as-tool) error: {legacy['error']}")
 
     return "\n".join(lines)
 

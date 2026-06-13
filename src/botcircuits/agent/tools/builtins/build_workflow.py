@@ -338,9 +338,16 @@ def build_workflow_tool(
             from ...workflow.condition_processor import (
                 generate_expressions_and_variables,
             )
+            from ...workflow.engine.segments import compute_segments
             try:
                 index_summary = await generate_expressions_and_variables(
                     built_record["flow"], provider
+                )
+                # Derive branch-delimited segments AFTER indexing so the
+                # `choices` the indexer emits are present. The engine
+                # runner batches each segment into one LLM call.
+                built_record["flow"]["segments"] = compute_segments(
+                    built_record["flow"]
                 )
             except Exception as e:
                 index_error = f"{type(e).__name__}: {e}"

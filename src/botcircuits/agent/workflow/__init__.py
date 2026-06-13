@@ -19,7 +19,8 @@ from botcircuits.agent.workflow.cli_commands import (
     compose_workflow_step_directive,
     render_system_notes,
 )
-from botcircuits.agent.workflow.local import LocalWorkflowError
+from botcircuits.agent.workflow.engine.runner import run_workflow_engine
+from botcircuits.agent.workflow.local import LocalWorkflowError, _load_workflow_record
 
 
 async def fetch_workflows() -> list[dict]:
@@ -87,6 +88,124 @@ def _branch_input_schema(branch_variables: list[dict]) -> dict:
     return {"type": "object", "properties": properties}
 
 
+def _make_resolve_unfilled(*, provider, normalize_enabled):
+    """Build the Tier-0/Tier-2 backfill hook the engine runner calls when a
+    branch variable is still empty after Tier-1 (`record_slots`) capture.
+
+    Tier 0 — the deterministic resolver (`slot_resolver.resolve_slots`):
+    raw args, authored choice values, typed extraction from the last user
+    message, saved slots. Zero tokens.
+    Tier 2 — cheap-model semantic extraction (`variable_normalizer.normalize`),
+    only for what Tier 0 leaves unresolved, only when a provider is given.
+    """
+    from botcircuits.agent.workflow.slot_resolver import resolve_slots
+    from botcircuits.agent.workflow.variable_normalizer import normalize
+
+    async def _resolve(*, flow, step_id, variables, slots):
+        out: dict = {}
+        # Tier 0 — deterministic. `last_user_message` is the freshest
+        # context the resolver reads; the engine keeps it on the slots
+        # context under a reserved key when available.
+        last_user = slots.get("__last_user_message__", "") if isinstance(slots, dict) else ""
+        resolved, unresolved = resolve_slots(
+            flow=flow,
+            step_id=step_id,
+            variables=variables,
+            raw_args={},
+            saved_slots=slots,
+            last_user_message=last_user,
+        )
+        if resolved:
+            out.update(resolved)
+        # Tier 2 — cheap-model fallback for the remainder.
+        if provider is not None and normalize_enabled and unresolved:
+            from botcircuits.agent.workflow.local import _action_text_for_step
+            # Tag the cheap-model fallback call so eval token accounting can
+            # break it out from segment / conversational usage (§7).
+            try:
+                provider.usage_purpose = "tier2_normalization"
+            except Exception:
+                pass
+            extracted = await normalize(
+                provider=provider,
+                variables=unresolved,
+                raw_args={**slots, **out},
+                action_text=_action_text_for_step(flow, step_id),
+                last_assistant_message="",
+                last_user_message=last_user,
+            )
+            if extracted:
+                out.update(extracted)
+        return out
+
+    return _resolve
+
+
+async def _run_engine(
+    wf_name: str,
+    args: dict,
+    state: dict,
+    run_segment,
+    *,
+    provider: LLMProvider | None,
+    normalize_enabled: bool,
+    last_user_message: str = "",
+) -> str:
+    """Engine-driven execution: the runner owns the loop, calling
+    `run_segment` (the agent's `_run_segment`) once per branch-delimited
+    segment. Returns one summary line on completion, or the pending
+    question when the workflow pauses for the user.
+
+    Pause/resume: on a user-interaction pause the runner yields; we stash
+    the resume cursor + accumulated slots on `state` so the next call (the
+    user's reply) continues from the same segment. On completion or when
+    no workflow is active, `state` is reset so a fresh request restarts.
+    """
+    record = _load_workflow_record(wf_name)
+    flow = record.get("flow")
+    if not isinstance(flow, dict):
+        raise LocalWorkflowError(f"workflow {wf_name!r} is missing flow")
+
+    # Resume from a prior pause if there is one; otherwise start fresh and
+    # seed slots from the trigger call's args.
+    resume_step = state.get("engine_paused_step")
+    slots = dict(state.get("engine_slots") or {})
+    if resume_step is None:
+        slots.update({k: v for k, v in (args or {}).items() if v not in (None, "")})
+    # Reserved key the Tier-0 resolver reads as the freshest user context
+    # (deterministic choice-value / typed extraction). Stripped from the
+    # final slots before the summary so it never leaks into output.
+    if last_user_message:
+        slots["__last_user_message__"] = last_user_message
+
+    resolve_unfilled = _make_resolve_unfilled(
+        provider=provider, normalize_enabled=normalize_enabled,
+    )
+    result = await run_workflow_engine(
+        flow,
+        workflow_name=wf_name,
+        run_segment=run_segment,
+        start_step_id=resume_step,
+        slots=slots,
+        resolve_unfilled=resolve_unfilled,
+    )
+
+    if result.paused:
+        # Park: remember where to resume and what we've collected.
+        state["engine_paused_step"] = result.paused_step or resume_step
+        state["engine_slots"] = result.slots
+        state["session_id"] = wf_name  # mark active for active_workflow_names
+        state["finished_quietly"] = False
+        return result.question or "(workflow is waiting for your input)"
+
+    # Completed — reset so the next request restarts cleanly.
+    state["engine_paused_step"] = None
+    state["engine_slots"] = {}
+    state["session_id"] = None
+    state["finished_quietly"] = True
+    return result.summary
+
+
 def workflow_tool(
     record: dict,
     *,
@@ -124,10 +243,27 @@ def workflow_tool(
         "session_id": None,
         "branch_variables": [],
         "finished_quietly": False,
+        # Engine-driven mode: the runner pauses on a user-interaction step
+        # and stashes its resume cursor here so the next call continues.
+        "engine_paused_step": None,
+        "engine_slots": {},
     }
 
     async def _handler(args: dict, context: dict | None = None) -> str:
         ctx = context or {}
+
+        # Engine-driven path: when the agent loop supplies a `run_segment`
+        # callback, the ENGINE owns the loop — one call drives the whole
+        # workflow (or up to the next user-interaction pause) and returns a
+        # single summary line, instead of yielding one step at a time.
+        run_segment = ctx.get("run_segment")
+        if run_segment is not None:
+            return await _run_engine(
+                wf_name, args, state, run_segment,
+                provider=provider, normalize_enabled=normalize_enabled,
+                last_user_message=ctx.get("last_user_message", ""),
+            )
+
         result = await run_workflow(
             wf_name, args,
             session_id=state["session_id"],

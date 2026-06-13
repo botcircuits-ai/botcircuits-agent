@@ -11,18 +11,25 @@ For each dataset:
      reuse the generated workflow across every case in the dataset.
      If the build fails, every case in that dataset is marked errored
      and the harness moves to the next dataset.
-  2. Drive each case through the REAL `Agent` `repeats` times in TWO
-     modes:
+  2. Drive each case through the REAL `Agent` `repeats` times in two
+     Agent modes, plus a third engine-only mode for the §7 comparison:
        - workflow_on  : Agent with the workflow tool registered. The
-                        agent decides when to call it; the engine
-                        handles branching and slot collection.
+                        agent calls it; the ENGINE then owns the loop,
+                        driving the workflow per branch-delimited segment
+                        (the engine-driven mode under test).
        - workflow_off : Agent with the workflow tool disabled (via
                         `Agent.enable_workflows=False`) and the
                         dataset's `workflow_spec` appended to the
-                        system prompt as plain instructions.
-     Both modes use the same provider + the same other tools
-     (read_file, write_file, etc.). The ONLY difference is whether
-     the workflow tool is exposed and how the procedure is described.
+                        system prompt as plain instructions (the
+                        prompt-driven baseline).
+       - workflow_as_tool : the legacy per-step `run_workflow` driver
+                        (`run_case_workflow`) run in isolation — the
+                        pre-inversion "workflow-as-tool" path. Measured
+                        standalone (not through a real Agent, since the
+                        engine now intercepts advancement), so its
+                        numbers are indicative, not apples-to-apples.
+     The two Agent modes share the same provider + other tools. The
+     third is the historical baseline the inversion replaced.
   3. Both modes run `repeats` times so the consistency metric uses
      the same denominator on both sides.
   4. Score each run with `score_case` against the dataset's
@@ -63,6 +70,9 @@ from botcircuits.agent.workflow.evaluation.runner_agent import (
     AgentRunResult,
     run_case_agent_no_workflow,
     run_case_agent_with_workflow,
+)
+from botcircuits.agent.workflow.evaluation.runner_workflow import (
+    run_case_workflow,
 )
 
 
@@ -290,6 +300,8 @@ async def _evaluate_case(
     """
     wf_runs: list[AgentRunResult] = []
     pr_runs: list[AgentRunResult] = []
+    legacy_run = None
+    _legacy_err = build_error
 
     if not build_error and provider is not None:
         wf_runs = await _run_agent_repeats(
@@ -302,6 +314,16 @@ async def _evaluate_case(
                 runtime_case, provider, repeats,
                 spec=workflow_spec,
             )
+        # Third column (§7): the legacy per-step workflow-as-tool driver,
+        # run once in isolation. Failures here never abort the case — the
+        # column is informational, so we swallow and record the error.
+        try:
+            legacy_run = await run_case_workflow(runtime_case, provider=provider)
+        except Exception as e:  # pragma: no cover - defensive
+            legacy_run = None
+            _legacy_err = f"{type(e).__name__}: {e}"
+        else:
+            _legacy_err = legacy_run.error
 
     # Score the workflow_on side. On any failure that left wf_runs
     # empty, score zero across the declared signals.
@@ -338,6 +360,7 @@ async def _evaluate_case(
             "final_text": pr_first.final_text,
             "tool_calls": pr_first.tool_calls,
             "error": pr_first.error,
+            "usage": _usage_payload(pr_first),
         }
     elif build_error and run_prompt_baseline:
         # Keep both summary columns symmetric on build failures.
@@ -361,6 +384,36 @@ async def _evaluate_case(
             "tool_calls": wf_first.tool_calls,
             "workflow_invocations": getattr(wf_first, "workflow_invocations", 0),
             "error": wf_first.error,
+            # Engine-driven mode: per-purpose token breakdown so the report
+            # can compare against the prompt baseline (§7).
+            "usage": _usage_payload(wf_first),
         },
         "prompt_run": pr_first_payload,
+        # Third column: the legacy per-step workflow-as-tool path, measured
+        # standalone. `score` mirrors the must_contain/final_state scoring
+        # the other columns use, against the engine's final action text.
+        "workflow_as_tool_run": (
+            {
+                "final_action": legacy_run.final_action,
+                "done": legacy_run.done,
+                "invocations": legacy_run.invocations,
+                "score": asdict(score_case(case, [], legacy_run.final_action)),
+                "error": _legacy_err,
+            }
+            if legacy_run is not None else (
+                {"error": _legacy_err} if not build_error else None
+            )
+        ),
+    }
+
+
+def _usage_payload(run: AgentRunResult) -> dict:
+    """Token usage for one agent run, with the per-purpose breakdown that
+    backs the §5/§7 cost comparison."""
+    return {
+        "input_tokens": getattr(run, "input_tokens", 0),
+        "output_tokens": getattr(run, "output_tokens", 0),
+        "cache_read_tokens": getattr(run, "cache_read_tokens", 0),
+        "llm_calls": getattr(run, "llm_calls", 0),
+        "by_purpose": getattr(run, "usage_by_purpose", {}) or {},
     }

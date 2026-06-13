@@ -273,20 +273,25 @@ def _registry_with_state(state: dict) -> ToolRegistry:
     return reg
 
 
-def test_reminder_forbids_recall_on_non_branching_step():
+def test_reminder_resume_when_workflow_paused():
+    # Engine-driven mode: a workflow with a live session_id is paused
+    # waiting on the user. The reminder asks the model to re-call the tool
+    # to resume — the engine owns advancement, so there is no per-step
+    # "act then re-call with branch args" dance anymore.
     reg = _registry_with_state(
         {"session_id": "sid", "branch_variables": []}
     )
     system = _with_workflow_reminder("base", reg)
-    assert "Do NOT call 'wf_branch'" in system
+    assert "paused waiting for the user's reply" in system
+    assert "call 'wf_branch' again to resume" in system
 
 
-def test_reminder_asks_for_recall_with_args_on_branching_step():
-    reg = _registry_with_state({
-        "session_id": "sid",
-        "branch_variables": [_var("order_status", "string", "state")],
-    })
+def test_reminder_trigger_when_no_workflow_active():
+    # No active workflow but a workflow tool is registered: the reminder
+    # tells the model the tool MUST be its first action on a match.
+    reg = _registry_with_state(
+        {"session_id": None, "branch_variables": []}
+    )
     system = _with_workflow_reminder("base", reg)
-    assert "call 'wf_branch' passing the values" in system
-    assert "- order_status (string): state" in system
-    assert "Do NOT call" not in system
+    assert "[Available workflows]" in system
+    assert "MANDATORY" in system
