@@ -41,22 +41,26 @@ def _dedupe_conditions(conditions: list[dict]) -> list[dict]:
     return result
 
 
-def _collect_condition_steps(flow: dict) -> list[dict]:
-    """Find every agentAction/question step that carries natural-language
-    `conditions` at the step root. Filters out empty entries and dedupes
-    per step.
+#: Step types whose natural-language `conditions` the builder compiles into
+#: rule-engine `choices`. `listDecision` is included: its conditions are the
+#: per-item decision rules (evaluated against each item's facts).
+_BRANCHABLE_TYPES = ("agentAction", "question", "systemAction", "listDecision")
 
-    Branching lives on `agentAction` and `question` steps (via
-    `step.conditions` / `step.choices`) and is evaluated on re-entry,
-    after the LLM has had a chance to fill variables (for a `question`
-    step, after the user's reply lands).
+
+def _collect_condition_steps(flow: dict) -> list[dict]:
+    """Find every branchable step that carries natural-language `conditions`
+    at the step root. Filters out empty entries and dedupes per step.
+
+    Branching lives on the step (via `step.conditions` → `step.choices`) and is
+    evaluated on re-entry, after variables are filled (for a `question` step,
+    after the user's reply; for a `listDecision` step, against each item).
     """
     steps = flow.get("steps") or {}
     entries: list[dict] = []
     for step_id, step in steps.items():
         if not isinstance(step, dict):
             continue
-        if step.get("type") not in ("agentAction", "question", "systemAction"):
+        if step.get("type") not in _BRANCHABLE_TYPES:
             continue
         raw = step.get("conditions")
         if not isinstance(raw, list):
@@ -95,8 +99,30 @@ def _build_step_summary(flow: dict) -> str:
     return "\n".join(lines)
 
 
+def _existing_variable_lines(flow: dict, condition_entries: list[dict]) -> list[str]:
+    """Author-declared facts the indexer should REUSE rather than reinvent: the
+    flow-level `variables` (often resolver-backed) and each listDecision step's
+    `itemVariables` (the per-item facts its conditions test). Reusing these names
+    is what lets a resolver-backed variable stay deterministic — an invented
+    synonym would have no resolver and force an LLM round-trip at runtime."""
+    lines: list[str] = []
+    for v in flow.get("variables") or []:
+        if isinstance(v, dict) and isinstance(v.get("variableName"), str):
+            desc = v.get("description") or ""
+            lines.append(f'  - {v["variableName"]}: {desc}')
+    seen_item: set[str] = set()
+    for entry in condition_entries:
+        for iv in entry["step"].get("itemVariables") or []:
+            name = iv.get("variableName") if isinstance(iv, dict) else None
+            if isinstance(name, str) and name not in seen_item:
+                seen_item.add(name)
+                lines.append(f'  - {name}: {iv.get("description") or ""} (per-item)')
+    return lines
+
+
 def _build_prompt(flow: dict, condition_entries: list[dict]) -> str:
     step_summary = _build_step_summary(flow)
+    existing_vars = _existing_variable_lines(flow, condition_entries)
 
     condition_lines: list[str] = []
     for entry in condition_entries:
@@ -134,6 +160,14 @@ def _build_prompt(flow: dict, condition_entries: list[dict]) -> str:
         "  2. Produce an expression using one of the supported operators.",
         "  3. Define each unique variable once with a clear description and "
         'dataType ("string", "boolean", "number").',
+        "",
+        "IMPORTANT — REUSE existing variables. The workflow already declares the "
+        "facts below. When a condition tests one of them, your expression MUST "
+        "use that exact variable_name and its stated value vocabulary (do NOT "
+        "invent a synonym). Only introduce a new variable for a fact not listed "
+        "here.",
+        ("Existing facts:\n" + "\n".join(existing_vars)) if existing_vars
+        else "Existing facts: (none)",
         "",
         "Workflow overview:",
         step_summary,
@@ -338,11 +372,14 @@ async def generate_expressions_and_variables(
         if not isinstance(name, str) or not name or name in seen_names:
             continue
         seen_names.add(name)
-        aggregated.append({
-            "variableName": name,
-            "dataType": v.get("dataType") or "string",
-            "description": v.get("description") or "",
-        })
+        # Preserve the author's variable verbatim (so a hand-declared `resolver`,
+        # `allowed`, etc. survive a rebuild), only filling defaults for the two
+        # mechanical fields. Spread first so canonical keys take precedence.
+        merged = {**v,
+                  "variableName": name,
+                  "dataType": v.get("dataType") or "string",
+                  "description": v.get("description") or ""}
+        aggregated.append(merged)
     flow["variables"] = aggregated
 
     return {

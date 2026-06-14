@@ -254,18 +254,27 @@ The engine builds this answer itself, so the assistant doesn't have to repeat it
 
 Quick reference — keep your source at the **"what you write"** level:
 
-| You write (intent) | build generates (don't edit) |
+| You write (intent) | build generates / defaults (don't edit) |
 |---|---|
 | `name`, `description`, `flow.start` | the `.build/` artifact |
-| step `type`, `settings.action` | branch rule-expressions |
+| step `type`, `settings.action` | branch rule-expressions (`choices`) from your `conditions` |
 | `conditions` (plain language) | variable `dataType` (if omitted) |
 | `next` | execution `segments` |
-| variable `variableName` + `description` | |
-| `resolver` / `itemSource` / `itemFacts` (intent) | |
-| `flow.result` shape | |
+| variable `variableName` + `description` | the `deterministic` skip flag (when a step's branch facts all resolve) |
+| `resolver` / `itemSource` / `itemFacts` (intent) | listDecision `decisionKey` / `collectInto` / `emit` defaults |
+| `flow.result` shape *(optional — see below)* | `flow.result` default (when a listDecision collects a list) |
 
-If you ever find yourself writing rule-expressions, type annotations, or other
-machinery by hand, that's a sign it should come from `build` instead.
+You **don't** need to write: `choices` / `expressionList`, `dataType`,
+`deterministic`, a listDecision's `decisionKey` / `collectInto` / `emit`, or
+`flow.result` — build fills sensible defaults. Provide them only to override.
+
+A few fields are **intent you must write** because build can't guess them
+safely: a variable's `resolver`, a listDecision's `itemSource` + `itemFacts`
+(including its `derive` mapping), and `nullOn` (which decisions blank out a
+field, e.g. a rejected item has no total).
+
+If you find yourself writing rule-expressions or type annotations by hand,
+that's a sign it should come from `build` instead.
 
 ---
 

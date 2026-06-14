@@ -24,6 +24,7 @@ from botcircuits.agent.workflow.action_optimizer import optimize_actions
 from botcircuits.agent.workflow.condition_processor import generate_expressions_and_variables
 from botcircuits.agent.workflow.engine.segments import compute_segments
 from botcircuits.agent.workflow.graph_optimizer import optimize_graph
+from botcircuits.agent.workflow.workflow_defaults import apply_defaults
 from botcircuits.agent.workflow.evaluation import (
     EvalDatasetError,
     discover_datasets,
@@ -188,6 +189,18 @@ def _cmd_build(args: argparse.Namespace) -> int:
         out(C.red(f"[workflow] build failed: {type(e).__name__}: {e}"))
         return 1
     else:
+        # Defaults inference (pure, no LLM). Fill the mechanical fields the
+        # author can omit — the `deterministic` skip flag, listDecision
+        # decisionKey/collectInto/emit/nullOn, dataType upgrades, and a
+        # `flow.result` shape — so the SOURCE stays intent-only. Runs after
+        # indexing (needs `choices`/`variables`) and before the optimizers.
+        df = apply_defaults(flow)
+        if any(df.values()):
+            out(C.dim(
+                f"  defaults filled: {df['deterministic']} deterministic, "
+                f"{df['listDecision_defaults']} listDecision, "
+                f"{df['result']} result"
+            ))
         if not getattr(args, "no_optimize", False):
             # Passes 2+3 — structural graph optimizer (pure, no LLM). Fuse
             # adjacent independent branch steps and fold a terminal restatement
