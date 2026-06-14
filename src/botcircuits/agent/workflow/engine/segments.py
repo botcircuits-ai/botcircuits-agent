@@ -48,8 +48,10 @@ def _is_branch_step(step: dict) -> bool:
 def _pausing(step: dict) -> bool:
     """Steps that put a payload in front of the LLM. `systemAction` is
     non-pausing bookkeeping the engine walks without a round-trip, so it
-    never forces a segment boundary on its own."""
-    return step.get("type") in ("agentAction", "question")
+    never forces a segment boundary on its own. `listDecision` (S3) makes one
+    LLM call to gather the per-item fact list, so it pauses like an
+    agentAction."""
+    return step.get("type") in ("agentAction", "question", "listDecision")
 
 
 def compute_segments(flow: dict) -> list[dict[str, Any]]:

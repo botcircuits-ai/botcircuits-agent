@@ -31,9 +31,24 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
+from pathlib import Path
+
 from botcircuits.agent.workflow.engine.handlers.choice import evaluate_choices
+from botcircuits.agent.workflow.engine.item_resolver import resolve_item_facts
+from botcircuits.agent.workflow.engine.result_render import (
+    persist_result,
+    render_result,
+    result_summary_line,
+)
+from botcircuits.agent.workflow.engine.tier0_resolver import resolve_tier0
 from botcircuits.agent.workflow.engine.utils import fill_text_with_slots
 from botcircuits.agent.workflow.variable_normalizer import variables_for_step
+
+
+def _BASE_DIR() -> Path:
+    """The directory Tier-0 resolvers / result-render read files relative to:
+    the run cwd (the agent runs with cwd = the workspace)."""
+    return Path.cwd()
 
 #: Upper bound on segments walked in one run — guards against a branch
 #: cycle the deterministic graph could otherwise spin on forever.
@@ -54,6 +69,9 @@ class SegmentResult:
     paused: bool = False
     #: The question to surface when `paused`.
     question: str = ""
+    #: S3 — for a `listDecision` segment, the per-item fact-sets the model
+    #: reported via `record_item_list`. The engine decides each deterministically.
+    captured_items: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -83,6 +101,7 @@ class SegmentRunner(Protocol):
         branch_variables: list[dict],
         system_notes: list[str],
         slots: dict[str, Any],
+        item_variables: list[dict] | None = None,
     ) -> SegmentResult: ...
 
 
@@ -198,6 +217,18 @@ async def run_workflow_engine(
     slots = dict(slots or {})
     decisions: list[dict] = []
 
+    # S4 — resolve every `flow.variables` entry that carries a deterministic
+    # `resolver` up front, in code. This fills standalone values the result
+    # template / later steps need (e.g. customer_id) without an LLM call, in
+    # addition to the per-branch Tier-0 skip below. Best-effort: variables that
+    # don't resolve are simply left for Tier-1.
+    resolvable = [v for v in (flow.get("variables") or [])
+                  if isinstance(v, dict) and isinstance(v.get("resolver"), dict)]
+    for v in resolvable:
+        one = resolve_tier0([v], slots, base_dir=_BASE_DIR())
+        if one:
+            slots.update(one)
+
     # Pick the starting segment: the one whose head is the requested start
     # step, else the first segment (graph entry).
     current = by_id.get(start_step_id) if start_step_id else None
@@ -222,6 +253,86 @@ async def run_workflow_engine(
             variables_for_step(flow, branch_step_id) if branch_step_id else []
         )
         actions = _action_texts(flow, current.get("steps") or [], slots)
+
+        # S4 — Tier-0 skip. When the segment is a SINGLE branch step explicitly
+        # marked deterministic and EVERY one of its branch variables resolves in
+        # code (resolver specs on all of them), the engine fills the slots
+        # itself and skips the LLM call entirely — no provider round-trip, zero
+        # tokens. The `deterministic` flag is the author's assertion that the
+        # step has no side effects worth an LLM (it's a pure read-and-decide);
+        # without it we always run the segment, so the skip can never drop a
+        # step that actually does work.
+        tier0 = None
+        branch_step = steps.get(branch_step_id) or {} if branch_step_id else {}
+        if (branch_step_id
+                and branch_step.get("deterministic")
+                and current.get("steps") == [branch_step_id]):
+            tier0 = resolve_tier0(branch_variables, slots, base_dir=_BASE_DIR())
+        if tier0 is not None:
+            slots.update(tier0)
+            captured_keys = set(tier0)
+            default_next = branch_step.get("next")
+            chosen = evaluate_choices(
+                branch_step.get("choices") or [],
+                _eval_message(workflow_name, slots),
+                default_next,
+            )
+            decisions.extend(_record_decision(
+                branch_step, chosen, default_next, slots, captured_keys,
+            ))
+            current = by_id.get(chosen) if chosen else None
+            continue
+
+        # S3 — listDecision. The model reports a LIST of per-item fact-sets in
+        # one segment; the engine decides each element deterministically via the
+        # same `evaluate_choices`, accumulating one record per element into the
+        # `collectInto` slot. One LLM call → N deterministic decisions; the model
+        # never picks an outcome word. Cost scales with branches (one segment),
+        # not items.
+        if branch_step_id and branch_step.get("type") == "listDecision":
+            # S4-exec — if the step declares how to gather per-item facts
+            # deterministically (itemSource + itemFacts), the ENGINE runs the
+            # pricer per item itself and skips the LLM entirely. Otherwise the
+            # model reports the fact list (S3 Tier-1).
+            engine_items = resolve_item_facts(branch_step, base_dir=_BASE_DIR())
+            if engine_items is not None:
+                decided = _decide_list(workflow_name, branch_step, engine_items)
+                collect_into = branch_step.get("collectInto")
+                if isinstance(collect_into, str) and collect_into:
+                    slots[collect_into] = decided
+                decisions.extend(
+                    {"step": branch_step_id, "item": d} for d in decided
+                )
+                nxt = branch_step.get("next")
+                current = by_id.get(nxt) if nxt else None
+                continue
+
+            item_vars = branch_step.get("itemVariables") or []
+            seg = await run_segment(
+                actions=actions,
+                branch_variables=[],
+                system_notes=[],
+                slots=slots,
+                item_variables=item_vars,
+            )
+            if seg.paused:
+                return EngineResult(
+                    paused=True, question=seg.question,
+                    paused_step=current.get("id"), slots=slots,
+                    decisions=decisions,
+                )
+            decided = _decide_list(
+                workflow_name, branch_step, seg.captured_items,
+            )
+            collect_into = branch_step.get("collectInto")
+            if isinstance(collect_into, str) and collect_into:
+                slots[collect_into] = decided
+            decisions.extend(
+                {"step": branch_step_id, "item": d} for d in decided
+            )
+            nxt = branch_step.get("next")
+            current = by_id.get(nxt) if nxt else None
+            continue
 
         seg = await run_segment(
             actions=actions,
@@ -299,10 +410,62 @@ async def run_workflow_engine(
         ))
         current = by_id.get(chosen) if chosen else None
 
-    summary = _summary_line(workflow_name, last_text, slots)
+    # S2 — engine renders the final answer from its own state (a declared
+    # `flow.result`), so the model never spends output tokens emitting it. Falls
+    # back to the legacy outcome+slots line when no result is declared or it
+    # can't be rendered.
+    rendered = render_result(flow, slots, base_dir=_BASE_DIR())
+    if rendered is not None:
+        # Optionally persist the engine-rendered answer to a file so out-of-
+        # process consumers (CLIs that truncate tool-result previews, eval
+        # harnesses) can read the FULL result, not a display-clipped summary.
+        persist_result(flow, rendered, base_dir=_BASE_DIR())
+        summary = result_summary_line(workflow_name, rendered)
+    else:
+        summary = _summary_line(workflow_name, last_text, slots)
     return EngineResult(
         done=True, summary=summary, slots=slots, decisions=decisions,
     )
+
+
+def _decide_list(
+    workflow_name: str,
+    step: dict,
+    items: list[dict],
+) -> list[dict]:
+    """S3 — apply the listDecision step's `choices` to EACH reported item and
+    return one decided record per item.
+
+    For each item, `evaluate_choices` runs against that item's facts (as the
+    slot context) and yields a `next` label naming the outcome; the default
+    `next` covers the no-match case. The result record is the item's fields the
+    workflow wants to keep (`emit` field list, or all of them) plus
+    `{<decisionKey>: <label>}`. Deterministic: same facts → same decision.
+    """
+    choices = step.get("choices") or []
+    default_next = step.get("next")
+    decision_key = step.get("decisionKey") or "decision"
+    emit_fields = step.get("emit")  # optional whitelist of item fields to keep
+    # Optional: {field: [labels]} — null out `field` when the decision is one of
+    # `labels` (e.g. line_total must be null on reject). Deterministic.
+    null_on = step.get("nullOn") or {}
+    out: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = evaluate_choices(
+            choices, _eval_message(workflow_name, item), default_next,
+        )
+        kept = (
+            {k: item.get(k) for k in emit_fields}
+            if isinstance(emit_fields, list) else dict(item)
+        )
+        kept[decision_key] = label
+        for field_name, labels in null_on.items():
+            if isinstance(labels, list) and label in labels:
+                kept[field_name] = None
+        out.append(kept)
+    return out
 
 
 def _unfilled(variables: list[dict], slots: dict) -> list[dict]:

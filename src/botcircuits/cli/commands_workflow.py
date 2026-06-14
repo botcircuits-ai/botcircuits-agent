@@ -20,8 +20,10 @@ import asyncio
 import json
 from pathlib import Path
 
+from botcircuits.agent.workflow.action_optimizer import optimize_actions
 from botcircuits.agent.workflow.condition_processor import generate_expressions_and_variables
 from botcircuits.agent.workflow.engine.segments import compute_segments
+from botcircuits.agent.workflow.graph_optimizer import optimize_graph
 from botcircuits.agent.workflow.evaluation import (
     EvalDatasetError,
     discover_datasets,
@@ -72,6 +74,12 @@ def add_workflow_subparser(subparsers: argparse._SubParsersAction) -> None:
     build_p.add_argument(
         "workflow_name_pos", nargs="?", default=None,
         help=argparse.SUPPRESS,
+    )
+    build_p.add_argument(
+        "--no-optimize", dest="no_optimize", action="store_true",
+        help="Skip the action-optimizer pass (keep authored step action text "
+             "verbatim). Optimization rewrites verbose actions into terse, "
+             "tool-directed instructions to cut per-run tokens.",
     )
 
     eval_p = wf_subs.add_parser(
@@ -180,6 +188,33 @@ def _cmd_build(args: argparse.Namespace) -> int:
         out(C.red(f"[workflow] build failed: {type(e).__name__}: {e}"))
         return 1
     else:
+        if not getattr(args, "no_optimize", False):
+            # Passes 2+3 — structural graph optimizer (pure, no LLM). Fuse
+            # adjacent independent branch steps and fold a terminal restatement
+            # step into its producer, so a naturally-drawn graph runs in fewer
+            # segments / less redundant output. Runs AFTER indexing (needs
+            # `choices`) and BEFORE the action optimizer (so the terse rewrite
+            # sees the fused/folded action text).
+            g = optimize_graph(flow)
+            if g.get("branches_fused") or g.get("emits_folded"):
+                out(C.dim(
+                    f"  graph optimized: {g['branches_fused']} branch fusion(s), "
+                    f"{g['emits_folded']} emit fold(s)"
+                ))
+        # Pass 1 — action optimizer. Rewrite verbose authored step actions into
+        # terse, tool-directed instructions BEFORE segmentation, so a workflow
+        # written in natural language runs lean without the author hand-tuning
+        # each step. Best-effort and opt-out (`--no-optimize`): a failure leaves
+        # the authored text untouched. Runs after indexing (structure settled),
+        # before compute_segments (which is unaffected by action wording).
+        if not getattr(args, "no_optimize", False):
+            opt = asyncio.run(optimize_actions(flow, provider))
+            if opt.get("steps_optimized"):
+                saved = opt["chars_before"] - opt["chars_after"]
+                out(C.dim(
+                    f"  actions optimized: {opt['steps_optimized']} step(s), "
+                    f"-{saved} chars ({opt['chars_before']}→{opt['chars_after']})"
+                ))
         # Branch-delimited segments are derived AFTER the indexer so the
         # `choices` it emits are present. The engine runner reads
         # `flow["segments"]` to batch consecutive non-branching steps into

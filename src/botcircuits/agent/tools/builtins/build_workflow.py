@@ -74,7 +74,9 @@ if TYPE_CHECKING:
 OnBuiltCallback = Callable[[dict], Union[None, Awaitable[None]]]
 
 
-SUPPORTED_STEP_TYPES = {"start", "agentAction", "question", "systemAction"}
+SUPPORTED_STEP_TYPES = {
+    "start", "agentAction", "question", "systemAction", "listDecision",
+}
 
 # Step types that carry a natural-language `settings.action` and may
 # branch via `conditions`. `question` behaves like `agentAction` for

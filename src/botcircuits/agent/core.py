@@ -40,7 +40,9 @@ from botcircuits.agent.workflow import active_workflow_names
 from botcircuits.agent.workflow.engine.runner import SegmentResult
 from botcircuits.agent.workflow.engine.segment_exec import (
     ENGINE_SYSTEM_PROMPT,
+    RECORD_ITEM_LIST_TOOL,
     RECORD_SLOTS_TOOL,
+    build_record_item_list_tool,
     build_record_slots_tool,
     build_segment_user_message,
 )
@@ -435,15 +437,18 @@ class Agent:
 
     # -- engine-driven workflow segment execution --------------------------
 
-    def _engine_tools(self, record_slots) -> list:
+    def _engine_tools(self, record_slots, record_item_list=None) -> list:
         """Tools exposed to a segment call: the agent's real tools (built-ins,
         MCP, skills) MINUS workflow tools — the engine owns advancement now,
         so the model must not re-enter a workflow tool — PLUS the synthetic
-        `record_slots` capture tool when the segment branches."""
+        capture tool(s): `record_slots` when the segment branches, or
+        `record_item_list` for a listDecision segment (S3)."""
         base = [t for t in self.tools.all()
                 if getattr(t, "_workflow_state", None) is None]
         if record_slots is not None:
             base.append(record_slots)
+        if record_item_list is not None:
+            base.append(record_item_list)
         return base
 
     async def _run_segment(
@@ -453,6 +458,7 @@ class Agent:
         branch_variables: list[dict],
         system_notes: list[str],
         slots: dict,
+        item_variables: list[dict] | None = None,
         event_sink=None,
     ) -> SegmentResult:
         """Run ONE branch-delimited segment: a constant-size cached system
@@ -473,12 +479,21 @@ class Agent:
             build_record_slots_tool(branch_variables, captured)
             if branch_variables else None
         )
-        engine_tools = self._engine_tools(record_slots)
+        # S3 — for a listDecision segment, expose the list-capture tool instead
+        # of (or alongside) record_slots. The model reports a list of per-item
+        # fact-sets; the engine decides each deterministically.
+        item_sink: dict = {}
+        record_item_list = (
+            build_record_item_list_tool(item_variables, item_sink)
+            if item_variables else None
+        )
+        engine_tools = self._engine_tools(record_slots, record_item_list)
         # A throwaway registry so `record_slots` is runnable without
         # polluting the agent's real registry. Real tools still execute via
         # self.tools; record_slots is intercepted below.
         user_msg = build_segment_user_message(
             actions, branch_variables, system_notes,
+            item_variables=item_variables,
         )
         messages: list[Message] = [
             Message(role="user", blocks=[{"type": "text", "text": user_msg}]),
@@ -524,10 +539,14 @@ class Agent:
             results: list[tuple[str, bool]] = []
             paused_question: str | None = None
             recorded_slots = False
+            recorded_items = False
             for tc in tool_calls:
                 if tc.name == RECORD_SLOTS_TOOL and record_slots is not None:
                     out, err = await self.tools_run_synthetic(record_slots, tc)
                     recorded_slots = True
+                elif tc.name == RECORD_ITEM_LIST_TOOL and record_item_list is not None:
+                    out, err = await self.tools_run_synthetic(record_item_list, tc)
+                    recorded_items = True
                 elif tc.name == HUMAN_FEEDBACK_TOOL:
                     out, err = await self.tools.run(tc.name, tc.arguments, None)
                     paused_question = _human_feedback_pause([tc], [(out, err)])
@@ -544,19 +563,23 @@ class Agent:
             if paused_question is not None:
                 return SegmentResult(
                     text=final_text, captured_slots=dict(captured),
+                    captured_items=list(item_sink.get("items", [])),
                     paused=True, question=paused_question,
                 )
 
-            # `record_slots` is the segment's terminal signal on a branching
-            # segment: once the model reports the branch values, the engine
-            # has what it needs to decide the next step, so we stop spending
-            # provider round-trips on this segment. (Non-branching segments
-            # have no record_slots tool and terminate naturally when the
-            # model stops calling tools.)
-            if recorded_slots:
+            # `record_slots` / `record_item_list` is the segment's terminal
+            # signal: once the model reports the branch values (or the per-item
+            # fact list), the engine has what it needs to decide, so we stop
+            # spending provider round-trips on this segment. (Non-branching
+            # segments have neither tool and terminate naturally when the model
+            # stops calling tools.)
+            if recorded_slots or recorded_items:
                 break
 
-        return SegmentResult(text=final_text, captured_slots=dict(captured))
+        return SegmentResult(
+            text=final_text, captured_slots=dict(captured),
+            captured_items=list(item_sink.get("items", [])),
+        )
 
     def _make_segment_runner(self, event_sink=None):
         """A `run_segment` callable for the tool context, bound to this
@@ -569,12 +592,14 @@ class Agent:
         if not self.enable_workflows:
             return None
 
-        async def _runner(*, actions, branch_variables, system_notes, slots):
+        async def _runner(*, actions, branch_variables, system_notes, slots,
+                          item_variables=None):
             return await self._run_segment(
                 actions=actions,
                 branch_variables=branch_variables,
                 system_notes=system_notes,
                 slots=slots,
+                item_variables=item_variables,
                 event_sink=event_sink,
             )
         return _runner
