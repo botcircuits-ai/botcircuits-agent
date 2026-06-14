@@ -98,6 +98,13 @@ def add_workflow_subparser(subparsers: argparse._SubParsersAction) -> None:
              "distinct name so it never overwrites a hand-authored workflow.",
     )
     gen_p.add_argument(
+        "--resources", dest="resources_file", default=None,
+        help="Path to a text manifest of workspace files/scripts the workflow "
+             "may read or run (input record path, data files, scripts). Helps "
+             "the generator wire deterministic resolvers/itemFacts instead of "
+             "pausing to ask the user.",
+    )
+    gen_p.add_argument(
         "--build", dest="also_build", action="store_true",
         help="Also run `workflow build` on the generated file immediately.",
     )
@@ -181,6 +188,15 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         return 2
     instructions = from_path.read_text()
 
+    resources = ""
+    res_file = getattr(args, "resources_file", None)
+    if res_file:
+        res_path = Path(res_file).expanduser()
+        if not res_path.is_file():
+            out(C.red(f"[workflow] --resources file not found: {res_path}"))
+            return 2
+        resources = res_path.read_text()
+
     try:
         cfg = load_cli_config(args)
     except ConfigError as e:
@@ -193,7 +209,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         f"using provider={cfg.provider} model={provider.model}"
     ))
     try:
-        doc = asyncio.run(generate_workflow(instructions, name, provider))
+        doc = asyncio.run(generate_workflow(instructions, name, provider,
+                                            resources))
     except Exception as e:
         out(C.red(f"[workflow] generate failed: {type(e).__name__}: {e}"))
         return 1

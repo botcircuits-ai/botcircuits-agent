@@ -65,7 +65,25 @@ def apply_defaults(flow: dict) -> dict:
     by_name = {v.get("variableName"): v for v in variables
                if isinstance(v, dict)}
 
-    filled = {"deterministic": 0, "listDecision_defaults": 0, "result": 0}
+    filled = {"deterministic": 0, "listDecision_defaults": 0, "result": 0,
+              "hoisted": 0}
+
+    # 0. Hoist known step fields a generator may have nested under `settings`.
+    #    The engine reads these at the STEP root; a generated workflow sometimes
+    #    tucks them inside `settings` next to `action`. Move them up so the step
+    #    works regardless of where they were authored. (`action` stays in
+    #    settings.)
+    _STEP_LEVEL = ("itemSource", "itemFacts", "itemVariables", "choices",
+                   "conditions", "next", "decisionKey", "collectInto", "emit",
+                   "nullOn", "deterministic")
+    for step in steps.values():
+        sc = step.get("settings") if isinstance(step, dict) else None
+        if not isinstance(sc, dict):
+            continue
+        for key in _STEP_LEVEL:
+            if key in sc and key not in step:
+                step[key] = sc.pop(key)
+                filled["hoisted"] += 1
 
     # 1. dataType upgrades from resolver kind (only when author left "string").
     for v in variables:

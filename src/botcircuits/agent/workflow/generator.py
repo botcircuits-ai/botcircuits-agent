@@ -37,10 +37,13 @@ _SYSTEM = (
 )
 
 
-def _prompt(instructions: str, name: str) -> str:
+def _prompt(instructions: str, name: str, resources: str = "") -> str:
     return "\n".join([
         f"Produce a workflow named '{name}' from the process described below.",
         "",
+        (("WORKSPACE RESOURCES the workflow can read/run (wire your resolvers, "
+          "itemSource, and itemFacts to these EXACT paths):\n" + resources + "\n")
+         if resources.strip() else ""),
         "OUTPUT a JSON object of this shape (intent only):",
         "{",
         '  "name": "' + name + '",',
@@ -68,18 +71,46 @@ def _prompt(instructions: str, name: str) -> str:
         "compiles them). Do NOT write choices/expressionList/expCondition.",
         "- Do NOT write dataType, segments, flow.result, or a `deterministic` "
         "flag — the builder fills those.",
-        "- Use a `listDecision` step when the process decides an outcome for "
-        "EVERY item in a list (e.g. each order line, each applicant). Give it "
-        "`itemSource` {file, path} for the list and `itemVariables` (the "
-        "per-item facts its conditions test).",
-        "- When a fact is a deterministic lookup the engine can do without AI "
-        "(a value in a file, membership in a list, a number range, or running a "
-        "script per item), express it: a variable may carry a `resolver` "
-        "({kind: jsonpath|enum_check|file_membership|range, ...}); a "
-        "listDecision may carry `itemFacts` ({kind:'exec', command:[...with "
-        "{field} placeholders], parse:'json', derive:{fact: rule}}). Only do "
-        "this when the instructions clearly describe such a file/script.",
         "- Keep step actions terse and imperative.",
+        "",
+        "DESIGN PRINCIPLE — PREFER DETERMINISM, NEVER ASK THE USER FOR DATA THAT "
+        "EXISTS. The input data the process needs (the order, the applicant, "
+        "inventory, blocklists, prices) lives in workspace FILES and SCRIPTS — "
+        "the instructions describe the POLICY, but you must wire it to read "
+        "those files/run those scripts, not converse:",
+        "- Do NOT use a `question` step to gather, validate, or 'ask for' input "
+        "that is in a file. A `question` PAUSES the whole workflow waiting on a "
+        "human and is almost always wrong here. Use `question` ONLY when the "
+        "instructions explicitly require asking a person something no file holds.",
+        "- When a fact is a deterministic lookup (a value in a file, membership "
+        "in a list, a number in a range), give its variable a `resolver` so the "
+        "ENGINE computes it with NO AI call:",
+        '    { "variableName": "header_status", "description": "...",',
+        '      "resolver": { "kind": "enum_check", "source": {"file": '
+        '"data/order.json", "path": "region"}, "allowed": ["US","EU"], '
+        '"true": "valid", "false": "invalid" } }',
+        "    resolver kinds: jsonpath {file,path}; enum_check {source,allowed,"
+        "true,false}; file_membership {file,value_source,true,false,"
+        "ignore_comments}; range {source,min,max,true,false}.",
+        "- When the process decides an outcome for EVERY item in a list, use a "
+        "`listDecision` step with `itemSource` {file, path} (the list) and "
+        "`itemVariables` (the per-item facts its `conditions` test). If each "
+        "item's facts come from running a script, add `itemFacts` so the ENGINE "
+        "runs it per item with NO AI:",
+        '    "itemFacts": { "kind": "exec", "command": ["python3", '
+        '"bin/price.py", "{sku}", "{qty}"], "parse": "json", "derive": { '
+        '"sku": {"from_item":"sku"}, "in_stock": {"from_output":"found"}, '
+        '"total": {"from_output":"line_total","default":0}, "enough": '
+        '{"ge":["output.stock","item.qty"]} } }',
+        "    derive rules: from_item:<k>; from_output:<k>[,default]; literal:<v>;"
+        " ge:[<ref>,<ref>] where a ref is 'item.x' / 'output.y' / a literal.",
+        "- A listDecision may set `nullOn` {field:[decisionLabels]} to blank a "
+        "field for certain outcomes (e.g. a rejected item has no total: "
+        '{"line_total": ["reject"]}).',
+        "",
+        "So: read header/screening facts via resolvers, process line items via a "
+        "listDecision with itemFacts — aim for a workflow that runs WITHOUT "
+        "pausing and WITHOUT the model deciding outcomes itself.",
         "",
         "Process description:",
         instructions,
@@ -93,14 +124,22 @@ async def generate_workflow(
     instructions: str,
     name: str,
     provider: LLMProvider,
+    resources: str = "",
 ) -> dict:
     """Generate an intent-only workflow source dict from NL `instructions`.
+
+    `resources` (optional) is a manifest of workspace files/scripts the workflow
+    may read or run (e.g. where the input record lives, the data files, the
+    pricer script) — supplied because the policy prose often names data files
+    but not the exact path the runtime will find them at. Wiring resolvers /
+    itemSource / itemFacts to these paths is what keeps the generated workflow
+    deterministic instead of pausing to ask the user.
 
     Returns the parsed workflow JSON (ready to write to disk and then
     `workflow build`). Retries a few times because a model occasionally emits
     slightly malformed JSON; a re-roll usually fixes it. Raises RuntimeError if
     no attempt yields valid JSON of the expected shape."""
-    prompt = _prompt(instructions, name)
+    prompt = _prompt(instructions, name, resources)
     last_err = ""
     last_raw = ""
     for attempt in range(_MAX_ATTEMPTS):
