@@ -42,14 +42,16 @@ All four require `--config` and exit 2 on user errors (duplicate name, unknown s
 These are the classes of bug you only find by running the actual CLI; they're called out here so the next person doesn't reintroduce them.
 
 ### 12.3 `workflow` subcommand
-[cli/commands_workflow.py](../../src/botcircuits/cli/commands_workflow.py). One sub-subcommand today:
+[cli/commands_workflow.py](../../src/botcircuits/cli/commands_workflow.py). Three sub-subcommands:
 
 | Command | What it does |
 |---|---|
-| `workflow build --name=<name>` | Compile NL `conditions` on the workflow's `agentAction`/`question` steps into `choices` + `flow.variables`. Rewrites the JSON file in place; idempotent. |
+| `workflow generate --from <desc> --name <name> [--build]` | Author an **intent-only** workflow SOURCE from a natural-language description ([generator.py](../../src/botcircuits/agent/workflow/generator.py)), one LLM call. Refuses to overwrite an existing source (distinct name required). `--build` chains into `build`. |
+| `workflow build --name <name> [--no-optimize]` | Compile a source into its runnable form: index NL `conditions` → `choices`/`flow.variables`; fill defaults ([workflow_defaults.py](../../src/botcircuits/agent/workflow/workflow_defaults.py): `deterministic`, listDecision `decisionKey`/`collectInto`/`emit`, `flow.result`); run the graph + action optimizers; derive `flow.segments`. Writes `.build/<name>.json`. |
+| `workflow eval ...` | Run the workflow evaluation framework (engine vs prompt-only baseline) on a dataset. |
 
-The subcommand reuses `load_cli_config(args)` and `make_provider(...)` from [cli/app.py](../../src/botcircuits/cli/app.py) so it picks the same provider/model the chat REPL would use — author-time inference (building) and runtime inference (Layer B normalization) stay on the same model. The import is deferred inside `_cmd_build` to avoid a circular import (app.py imports `commands_workflow`, which would otherwise re-import app.py at module load).
+All reuse `load_cli_config(args)` and `make_provider(...)` from [cli/app.py](../../src/botcircuits/cli/app.py) so author-time inference picks the same provider/model the chat REPL would. Imports are deferred inside the `_cmd_*` bodies to avoid the app.py ↔ commands_workflow circular import.
 
-Exit codes: 0 on success, 2 if `--id` is missing or the workflow isn't found, 1 if the provider call fails or returns unusable output. The successful path prints `(updated <path>)` plus a one-line summary (`states processed: N | expressions: M | variables: K`).
+Exit codes: 0 on success, 2 for a usage error (missing name / source not found / would overwrite), 1 if the provider call fails or returns unusable output. `build` prints a per-pass summary (`steps processed`, `defaults filled`, `graph optimized`, `actions optimized`); `generate` prints the written source path.
 
 ---

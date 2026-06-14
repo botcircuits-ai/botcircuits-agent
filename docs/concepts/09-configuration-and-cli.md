@@ -28,6 +28,8 @@ The command-line tool runs the agent interactively or in a script:
 
 - **chat** — talk to the agent in the terminal; supports streaming and showing
   tool results.
+- **workflow generate** — draft an intent-only workflow source from a
+  natural-language description.
 - **workflow build** — compile a workflow source into its runnable form.
 - **mcp / setup** — manage MCP servers and initial setup.
 

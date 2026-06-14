@@ -21,8 +21,17 @@ your workflow.json   ──►   workflow build   ──►   .build/<name>.json
 Two ways to create the source file:
 
 - **Write it by hand** (advanced users), then `workflow build`.
-- **Describe it in natural language** and let the generator produce the
-  `workflow.json`, then `workflow build`.
+- **Describe it in natural language** and let `workflow generate` produce the
+  source `workflow.json` for you, then `workflow build`:
+
+  ```
+  description (.md/.txt)  ──►  workflow generate  ──►  your workflow.json
+                               (one AI call;            (intent-only source;
+                                intent only)             review, then build)
+  ```
+
+  The generated file is a draft you can review and tweak — it's authored at the
+  same intent level, so the normal `workflow build` takes it from there.
 
 **Golden rule:** you author *intent*. You never hand-write the compiled
 mechanics (rule-expressions, value types, segments). Build generates those, and
@@ -278,13 +287,26 @@ that's a sign it should come from `build` instead.
 
 ---
 
-## 10. Building
+## 10. Generating & building
+
+### Generate a draft from a description (optional)
+
+```bash
+workflow generate --from <description.md> --name <workflow_name>
+```
+
+Reads a plain-text/Markdown description of the process and writes an intent-only
+source `workflow.json` you can review. It **won't overwrite** an existing file —
+pick a distinct `--name` so a generated draft never clobbers a hand-written
+workflow. Add `--build` to compile it in the same step.
+
+### Build
 
 ```bash
 workflow build --name <workflow_name>
 ```
 
-This reads your source, compiles it, and writes the runnable workflow. Re-run it
+Reads your source, compiles it, and writes the runnable workflow. Re-run it
 whenever you change the source. The `--no-optimize` flag skips the automatic
 tidy-up pass (terser action text, merged screens) if you want the build to stay
 literal.

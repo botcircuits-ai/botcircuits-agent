@@ -83,6 +83,25 @@ def add_workflow_subparser(subparsers: argparse._SubParsersAction) -> None:
              "tool-directed instructions to cut per-run tokens.",
     )
 
+    gen_p = wf_subs.add_parser(
+        "generate",
+        help="Generate an intent-only workflow SOURCE file from a "
+             "natural-language description (then run `workflow build`).",
+    )
+    gen_p.add_argument(
+        "--from", dest="from_file", required=True,
+        help="Path to a plain-text/Markdown file describing the process.",
+    )
+    gen_p.add_argument(
+        "--name", dest="workflow_name", required=True,
+        help="Name for the generated workflow (file stem + tool name). Use a "
+             "distinct name so it never overwrites a hand-authored workflow.",
+    )
+    gen_p.add_argument(
+        "--build", dest="also_build", action="store_true",
+        help="Also run `workflow build` on the generated file immediately.",
+    )
+
     eval_p = wf_subs.add_parser(
         "eval",
         help="Run the workflow evaluation framework: compare the STM "
@@ -134,6 +153,8 @@ def run_workflow_command(args: argparse.Namespace) -> int:
     """Entry point for `botcircuits-cli workflow ...`. Returns exit code."""
     if args.workflow_cmd == "build":
         return _cmd_build(args)
+    if args.workflow_cmd == "generate":
+        return _cmd_generate(args)
     if args.workflow_cmd == "eval":
         return _cmd_eval(args)
 
@@ -144,6 +165,72 @@ def run_workflow_command(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Subcommand bodies
 # ---------------------------------------------------------------------------
+
+
+def _cmd_generate(args: argparse.Namespace) -> int:
+    """`workflow generate --from <instructions> --name <name>` — author an
+    intent-only workflow SOURCE from a natural-language description and write it
+    to the workflows dir. Optionally build it (`--build`)."""
+    from .app import load_cli_config, make_provider
+    from botcircuits.agent.workflow.generator import generate_workflow
+
+    name = args.workflow_name
+    from_path = Path(args.from_file).expanduser()
+    if not from_path.is_file():
+        out(C.red(f"[workflow] --from file not found: {from_path}"))
+        return 2
+    instructions = from_path.read_text()
+
+    try:
+        cfg = load_cli_config(args)
+    except ConfigError as e:
+        out(C.red(f"[config] {e}"))
+        return 2
+
+    provider = make_provider(cfg.provider, cfg.model)
+    out(C.dim(
+        f"generating workflow {name!r} from {from_path} "
+        f"using provider={cfg.provider} model={provider.model}"
+    ))
+    try:
+        doc = asyncio.run(generate_workflow(instructions, name, provider))
+    except Exception as e:
+        out(C.red(f"[workflow] generate failed: {type(e).__name__}: {e}"))
+        return 1
+    finally:
+        try:
+            asyncio.run(provider.aclose())
+        except Exception:
+            pass
+
+    # Write the SOURCE file. Never clobber an existing file (e.g. a
+    # hand-authored workflow) — the name must be distinct.
+    workflows_dir = _resolve_workflows_dir()
+    try:
+        workflows_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        out(C.red(f"[workflow] cannot create {workflows_dir}: {e}"))
+        return 1
+    dest = workflows_dir / f"{name}.json"
+    if dest.exists():
+        out(C.red(
+            f"[workflow] {dest} already exists — refusing to overwrite. "
+            f"Use a different --name."
+        ))
+        return 2
+    dest.write_text(json.dumps(doc, indent=2) + "\n")
+    out(C.green(f"[workflow] wrote generated source: {dest}"))
+
+    if getattr(args, "also_build", False):
+        # Re-enter the build path on the just-written file.
+        build_args = argparse.Namespace(
+            workflow_name=name, workflow_name_pos=None, no_optimize=False,
+            provider=getattr(args, "provider", None),
+            model=getattr(args, "model", None),
+        )
+        return _cmd_build(build_args)
+    out(C.dim(f"  next: botcircuits workflow build --name {name}"))
+    return 0
 
 
 def _cmd_build(args: argparse.Namespace) -> int:

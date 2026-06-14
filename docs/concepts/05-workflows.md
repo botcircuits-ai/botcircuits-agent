@@ -41,6 +41,10 @@ plain-language branch conditions. Then `workflow build` compiles that into a
 runnable form. You never hand-write the low-level rules; the build step generates
 them.
 
+You can also start from a plain-language description and let `workflow generate`
+draft the source for you, then build it — so the whole path is
+**describe → generate → build → run**, with a human review point in the middle.
+
 See the [Workflow Authoring Guide](06-workflow-authoring-guide.md) for how to
 write one.
 
