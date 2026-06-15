@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
+from uuid import uuid4
 
 from pathlib import Path
 
@@ -153,6 +154,54 @@ def _eval_message(workflow_name: str, slots: dict) -> dict:
     }
 
 
+#: Interpreters whose first script argument is the meaningful "tool" name —
+#: `python3 bin/price.py` should surface as `price.py`, not `python3`.
+_INTERPRETERS = frozenset((
+    "python", "python3", "python2", "node", "ruby", "bash", "sh", "perl",
+))
+
+
+def _exec_tool_name(argv: list) -> str:
+    """The tool name to report for an exec: the script if argv[0] is a known
+    interpreter (the first arg ending in a script extension or path), else the
+    program itself. Lets Tool Correctness match on the script a human reads in
+    the workflow rather than the interpreter binary."""
+    if not argv:
+        return "exec"
+    head = Path(str(argv[0])).name
+    if head in _INTERPRETERS:
+        for arg in argv[1:]:
+            s = str(arg)
+            if s.startswith("-"):
+                continue  # interpreter flag, not the script
+            return Path(s).name
+    return head
+
+
+async def _emit_execs(
+    event_sink: Callable[[str, Any], Awaitable[None]] | None,
+    execs: list[tuple[list, str, int, bool]],
+) -> None:
+    """Surface each deterministic engine exec as a tool_call/tool_result pair on
+    the stream, matching what the LLM-driven tool path emits. The tool name is
+    the executed program (e.g. `price.py`) so Tool Correctness can match it.
+    No-op without a sink. Never raises — observability must not break a run."""
+    if event_sink is None or not execs:
+        return
+    from botcircuits.types import ToolCall
+
+    for argv, out, _rc, is_error in execs:
+        argv = argv or []
+        name = _exec_tool_name(argv)
+        tc = ToolCall(id=f"engine-exec-{uuid4().hex[:8]}", name=name,
+                      arguments={"argv": list(argv)})
+        try:
+            await event_sink("tool_call", tc)
+            await event_sink("tool_result", (tc, out, is_error))
+        except Exception:
+            pass
+
+
 def _record_decision(
     step: dict,
     matched_next: str | None,
@@ -193,6 +242,7 @@ async def run_workflow_engine(
     start_step_id: str | None = None,
     slots: dict[str, Any] | None = None,
     resolve_unfilled: Callable[..., Awaitable[dict]] | None = None,
+    event_sink: Callable[[str, Any], Awaitable[None]] | None = None,
 ) -> EngineResult:
     """Drive `flow` segment-by-segment until it ends or pauses for the user.
 
@@ -207,6 +257,13 @@ async def run_workflow_engine(
     (deterministic resolver first, cheap-model extraction last). When a
     branch variable is STILL empty after this, the engine routes to a
     clarification question instead of silently taking the default branch.
+
+    `event_sink`, when given, is an async `(kind, payload)` callable (same shape
+    the segment sink uses) that surfaces the engine's OWN deterministic tool
+    runs — currently the per-item pricer execs in a listDecision step — as
+    `tool_call`/`tool_result` events. Without it those execs run silently, so
+    Tool Correctness sees an empty tool sequence and scores 0 even though the
+    workflow really did invoke the tool.
     """
     segments = _segments_for(flow)
     if not segments:
@@ -294,8 +351,17 @@ async def run_workflow_engine(
             # deterministically (itemSource + itemFacts), the ENGINE runs the
             # pricer per item itself and skips the LLM entirely. Otherwise the
             # model reports the fact list (S3 Tier-1).
-            engine_items = resolve_item_facts(branch_step, base_dir=_BASE_DIR())
+            # Capture each pricer exec so we can surface it on the stream after
+            # resolution (the resolver is sync; the sink is async).
+            execs: list[tuple[list, str, int, bool]] = []
+            engine_items = resolve_item_facts(
+                branch_step, base_dir=_BASE_DIR(),
+                on_exec=(lambda argv, out, rc, err:
+                         execs.append((argv, out, rc, err)))
+                if event_sink is not None else None,
+            )
             if engine_items is not None:
+                await _emit_execs(event_sink, execs)
                 decided = _decide_list(workflow_name, branch_step, engine_items)
                 collect_into = branch_step.get("collectInto")
                 if isinstance(collect_into, str) and collect_into:
@@ -443,7 +509,11 @@ def _decide_list(
     `{<decisionKey>: <label>}`. Deterministic: same facts → same decision.
     """
     choices = step.get("choices") or []
-    default_next = step.get("next")
+    # The no-match fallback. listDecision steps carry it as `defaultNext`
+    # (e.g. "fulfill"); fall back to a plain `next` for older shapes. Reading
+    # only `next` here made every default-branch item decide to `None` — the
+    # common "fulfill" path emitted `decision: null`.
+    default_next = step.get("defaultNext") or step.get("next")
     decision_key = step.get("decisionKey") or "decision"
     emit_fields = step.get("emit")  # optional whitelist of item fields to keep
     # Optional: {field: [labels]} — null out `field` when the decision is one of

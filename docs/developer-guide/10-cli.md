@@ -46,7 +46,7 @@ These are the classes of bug you only find by running the actual CLI; they're ca
 
 | Command | What it does |
 |---|---|
-| `workflow generate --from <desc> --name <name> [--build]` | Author an **intent-only** workflow SOURCE from a natural-language description ([generator.py](../../src/botcircuits/agent/workflow/generator.py)), one LLM call. Refuses to overwrite an existing source (distinct name required). `--build` chains into `build`. |
+| `workflow generate --from <desc> --name <name> [--validate-loop N] [--build]` | Author an **intent-only** workflow SOURCE from a natural-language description ([generator.py](../../src/botcircuits/agent/workflow/generator.py)), one LLM call. Refuses to overwrite an existing source (distinct name required). `--validate-loop N` runs the draft through [workflow_validator.py](../../src/botcircuits/agent/workflow/workflow_validator.py) and feeds any problems (mis-wired itemSource path, dict itemVariables, missing description, question-step for file data, generic outcome labels) back to the model to repair, up to N rounds. `--build` chains into `build`. |
 | `workflow build --name <name> [--no-optimize]` | Compile a source into its runnable form: index NL `conditions` → `choices`/`flow.variables`; fill defaults ([workflow_defaults.py](../../src/botcircuits/agent/workflow/workflow_defaults.py): `deterministic`, listDecision `decisionKey`/`collectInto`/`emit`, `flow.result`); run the graph + action optimizers; derive `flow.segments`. Writes `.build/<name>.json`. |
 | `workflow eval ...` | Run the workflow evaluation framework (engine vs prompt-only baseline) on a dataset. |
 

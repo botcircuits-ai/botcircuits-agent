@@ -300,6 +300,13 @@ source `workflow.json` you can review. It **won't overwrite** an existing file â
 pick a distinct `--name` so a generated draft never clobbers a hand-written
 workflow. Add `--build` to compile it in the same step.
 
+Add **`--validate-loop N`** to have the generator check its own draft and repair
+it: each round it flags problems (a mis-pointed item-list path, an item-facts
+shape mistake, a missing description, a step that pauses to ask the user for data
+that's in a file, a generic outcome label) and asks the model to fix them, up to
+N rounds. Worth it for generated workflows â€” a stronger model plus a validate
+loop produces far more reliable drafts than either alone.
+
 ### Build
 
 ```bash

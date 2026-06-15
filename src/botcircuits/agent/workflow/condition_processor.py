@@ -191,17 +191,44 @@ def _build_prompt(flow: dict, condition_entries: list[dict]) -> str:
     ])
 
 
+# Operators ordered LONGEST-first so the alternation is greedy on the operator,
+# never on the value: without this, `stock is less than qty` matches the shorter
+# `is` first and captures `less than qty` as the (uncomparable) value. An
+# optional `is `/`is not ` prefix is allowed before the comparison/text operators
+# because the indexer (and authors) naturally phrase them as `X is less than Y`
+# or `X is greater than 5000`; we normalize that back to the bare operator the
+# choice handler implements.
+_PREFIXABLE_OPS = (
+    "greater than or equal", "greater than",
+    "less than or equal", "less than",
+    "not contains", "contains",
+    "starts with", "ends with",
+)
+_BARE_OPS = ("is not empty", "is empty", "is not", "is")
+_OP_ALTERNATION = "|".join(
+    re.escape(o)
+    for o in sorted(_PREFIXABLE_OPS + _BARE_OPS, key=len, reverse=True)
+)
 _EXPRESSION_RE = re.compile(
     r"^\s*(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s+"
-    r"(?P<op>is not empty|is empty|is not|is|greater than or equal|"
-    r"greater than|less than or equal|less than|not contains|contains|"
-    r"starts with|ends with)"
+    r"(?:is\s+not\s+|is\s+)?"           # optional `is`/`is not` linking verb
+    rf"(?P<op>{_OP_ALTERNATION})"
     r"(?:\s+(?P<val>.+))?\s*$"
 )
 
+#: A bare snake_case RHS on an ORDERED comparison is a reference to another fact
+#: (e.g. `stock less than qty`), not a literal. The choice handler resolves
+#: `{slot}` placeholders, so we wrap it. We do this ONLY for ordered operators:
+#: for `is`/`contains`/etc. an unquoted word is a string literal (`status is
+#: blocked`), and wrapping it would turn a real literal into a dangling slot ref.
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ORDERED_OPS = frozenset((
+    "greater than", "greater than or equal", "less than", "less than or equal",
+))
+
 
 def _parse_expression(exp: str) -> dict | None:
-    """Parse `<variable> <operator> <value>` back into the
+    """Parse `<variable> [is|is not] <operator> <value>` into the
     `{variable, operator, value}` shape the local choice handler reads.
     Returns None if the expression doesn't match.
     """
@@ -209,6 +236,10 @@ def _parse_expression(exp: str) -> dict | None:
     if not m:
         return None
     op = m.group("op")
+    # An `is not <comparison>` prefix means negate — but the only negatable
+    # comparison we model is `is not` itself (handled as a bare op); for the
+    # ordered/text operators the `is`/`is not` is just a linking verb, so we
+    # keep the bare operator. (Authors don't write `is not less than`.)
     val_raw = (m.group("val") or "").strip()
     if op in ("is empty", "is not empty"):
         value: Any = ""
@@ -227,7 +258,13 @@ def _parse_expression(exp: str) -> dict | None:
                 try:
                     value = float(val_raw)
                 except ValueError:
-                    value = val_raw
+                    # A bare identifier on an ordered comparison references
+                    # another fact -> resolve via its slot. Elsewhere it's a
+                    # string literal.
+                    if op in _ORDERED_OPS and _IDENT_RE.match(val_raw):
+                        value = f"{{{val_raw}}}"
+                    else:
+                        value = val_raw
     return {"variable": m.group("var"), "operator": op, "value": value}
 
 

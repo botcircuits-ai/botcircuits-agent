@@ -795,6 +795,11 @@ class Agent:
                         "session_id": sid,
                         "run_segment":
                             self._make_segment_runner(event_sink=_segment_sink),
+                        # Same sink the segment runner uses, so the engine's OWN
+                        # deterministic execs (per-item pricer) surface as
+                        # tool_call/tool_result events too — otherwise they run
+                        # silently and Tool Correctness scores 0.
+                        "event_sink": _segment_sink,
                     }
 
                     # Execute tools concurrently; surface each as it lands.

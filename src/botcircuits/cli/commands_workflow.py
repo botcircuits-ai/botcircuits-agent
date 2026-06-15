@@ -105,6 +105,21 @@ def add_workflow_subparser(subparsers: argparse._SubParsersAction) -> None:
              "pausing to ask the user.",
     )
     gen_p.add_argument(
+        "--validate-loop", dest="validate_loop", type=int, default=0,
+        metavar="N",
+        help="After generating, validate the draft and feed any problems back "
+             "to the model to repair, up to N rounds (0 = off). Catches "
+             "mis-wired itemSource paths, dict itemVariables, missing "
+             "description, question-for-file-data, etc.",
+    )
+    gen_p.add_argument(
+        "--dry-run-samples", dest="dry_run_samples", default=None,
+        help="JSON file of [{input, expected}] cases. With --validate-loop, the "
+             "draft is run on each input (deterministic item path) and any "
+             "decision that mismatches `expected` is fed back to the model to "
+             "repair — catches value-level wiring bugs static checks can't see.",
+    )
+    gen_p.add_argument(
         "--build", dest="also_build", action="store_true",
         help="Also run `workflow build` on the generated file immediately.",
     )
@@ -174,6 +189,89 @@ def run_workflow_command(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _make_dry_run(samples: list, base_dir):
+    """Build an async `dry_run(doc) -> list[str]` for the generator's validate
+    loop. For each sample {input, expected}, it stages the input where the
+    draft's listDecision reads its items, runs the DETERMINISTIC item path, and
+    returns a message for each per-item decision that doesn't match `expected`.
+
+    Compares only the fields each `expected` item specifies (decision +
+    line_total), keyed by sku/id — so extra fact fields don't cause false
+    mismatches. All in-process, no LLM.
+    """
+    import copy
+    import json as _json
+    from pathlib import Path
+    from botcircuits.agent.workflow.workflow_defaults import apply_defaults
+    from botcircuits.agent.workflow.workflow_validator import dry_run_decisions
+
+    def _id(d):
+        for k in ("sku", "product_id", "id"):
+            if d.get(k) not in (None, ""):
+                return str(d[k]).strip()
+        return ""
+
+    def _num(v):
+        try:
+            return None if v is None else round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+
+    async def _dry_run(doc: dict) -> list[str]:
+        flow = copy.deepcopy(doc.get("flow") or {})
+        apply_defaults(flow)
+        # Where does the deciding listDecision read its items from?
+        src = None
+        for s in (flow.get("steps") or {}).values():
+            if isinstance(s, dict) and s.get("type") == "listDecision" \
+                    and s.get("itemFacts") and s.get("itemSource"):
+                src = s["itemSource"]
+                break
+        if not src or not src.get("file"):
+            return []  # nothing deterministic to dry-run
+        order_path = base_dir / src["file"]
+        problems: list[str] = []
+        for case in samples:
+            if not isinstance(case, dict):
+                continue
+            inp, expected = case.get("input"), case.get("expected") or []
+            try:
+                order_path.parent.mkdir(parents=True, exist_ok=True)
+                order_path.write_text(_json.dumps(inp))
+                got = dry_run_decisions(flow, base_dir=base_dir) or []
+            except Exception as e:
+                problems.append(f"On sample input, the workflow errored: {e}")
+                continue
+            got_by = {_id(g): g for g in got}
+            for exp in expected:
+                g = got_by.get(_id(exp))
+                if g is None:
+                    problems.append(
+                        f"Item {_id(exp)!r}: expected a decision but the "
+                        "workflow produced none for it.")
+                    continue
+                for k, ev in exp.items():
+                    if k in ("sku", "product_id", "id"):
+                        continue
+                    gv = g.get(k)
+                    same = (_num(gv) == _num(ev)) if isinstance(ev, (int, float)) \
+                        else (str(gv).strip().lower() == str(ev).strip().lower())
+                    if not same:
+                        problems.append(
+                            f"Item {_id(exp)!r}: expected {k}={ev!r} but the "
+                            f"workflow decided {k}={gv!r}. Fix the condition "
+                            "wiring (the fact derive and the branch test must "
+                            "agree on value type/encoding).")
+        # De-dupe while preserving order; cap so feedback stays focused.
+        seen, uniq = set(), []
+        for p in problems:
+            if p not in seen:
+                seen.add(p); uniq.append(p)
+        return uniq[:12]
+
+    return _dry_run
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     """`workflow generate --from <instructions> --name <name>` — author an
     intent-only workflow SOURCE from a natural-language description and write it
@@ -208,9 +306,33 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         f"generating workflow {name!r} from {from_path} "
         f"using provider={cfg.provider} model={provider.model}"
     ))
+    # File-path / item-list checks resolve relative to the run cwd (the agent
+    # runs with cwd = the workspace, where data/ and the input record live).
+    from pathlib import Path as _Path
+    base_dir = _Path.cwd()
+
+    # Optional dry-run repair: run the draft on sample inputs and feed any
+    # decision mismatches back to the model (see _make_dry_run).
+    dry_run = None
+    samples_file = getattr(args, "dry_run_samples", None)
+    if samples_file:
+        sp = _Path(samples_file).expanduser()
+        if not sp.is_file():
+            out(C.red(f"[workflow] --dry-run-samples not found: {sp}"))
+            return 2
+        try:
+            samples = json.loads(sp.read_text())
+        except ValueError as e:
+            out(C.red(f"[workflow] --dry-run-samples not valid JSON: {e}"))
+            return 2
+        dry_run = _make_dry_run(samples, base_dir)
+
     try:
-        doc = asyncio.run(generate_workflow(instructions, name, provider,
-                                            resources))
+        doc = asyncio.run(generate_workflow(
+            instructions, name, provider, resources,
+            validate_loop=getattr(args, "validate_loop", 0),
+            base_dir=base_dir, dry_run=dry_run,
+        ))
     except Exception as e:
         out(C.red(f"[workflow] generate failed: {type(e).__name__}: {e}"))
         return 1

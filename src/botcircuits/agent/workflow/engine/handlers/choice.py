@@ -19,6 +19,34 @@ from botcircuits.agent.workflow.engine.utils import (
     to_number,
 )
 
+_BOOL_STR = {"true": True, "false": False, "yes": True, "no": False}
+
+
+def _equal_coerced(a, b) -> bool:
+    """Equality for the `is`/`is not` operators that tolerates the type
+    mismatches a workflow author (or generator) commonly produces: a slot
+    holding the boolean `False` compared against the string ``"false"``, or a
+    number against its string form. Falls back to case-insensitive string
+    comparison.
+
+    Without this, `found is 'false'` (string value) against a boolean `found`
+    slot is never equal, so the branch silently never fires.
+    """
+    if a == b:
+        return True
+    # Boolean <-> string ("true"/"false"/"yes"/"no").
+    for x, y in ((a, b), (b, a)):
+        if isinstance(x, bool) and isinstance(y, str):
+            return _BOOL_STR.get(y.strip().lower()) is x
+    # Number <-> numeric string.
+    na, nb = to_number(a), to_number(b)
+    if na is not None and nb is not None:
+        return na == nb
+    # Case-insensitive string compare.
+    if isinstance(a, str) and isinstance(b, str):
+        return a.strip().lower() == b.strip().lower()
+    return False
+
 
 def evaluate_choices(
     choices: list[dict],
@@ -88,9 +116,9 @@ def _evaluate_operator(condition: dict, variable_value, session_context: dict) -
         return a <= b
 
     if operator == "is":
-        return check_value == variable_value
+        return _equal_coerced(check_value, variable_value)
     if operator == "is not":
-        return check_value != variable_value
+        return not _equal_coerced(check_value, variable_value)
     if operator == "contains":
         return isinstance(variable_value, str) and check_value in variable_value
     if operator == "not contains":

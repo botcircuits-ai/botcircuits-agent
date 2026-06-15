@@ -67,8 +67,16 @@ def _prompt(instructions: str, name: str, resources: str = "") -> str:
         "}",
         "",
         "RULES:",
-        "- Write branch logic as natural-language `conditions` (the builder "
-        "compiles them). Do NOT write choices/expressionList/expCondition.",
+        "- Write branch logic ONLY as natural-language `conditions` — a list of "
+        "{condition: \"<plain English>\", next: \"<outcome word>\"}. The builder "
+        "compiles them into rule expressions. NEVER write `choices`, "
+        "`expressionList`, `expCondition`, or operators/values yourself: a "
+        "hand-written comparison like {operator:\"is\", value:\"less than qty\"} "
+        "silently never matches and the branch is dead. Just say "
+        "{condition: \"there is not enough stock\", next: \"backorder\"}.",
+        "- On a `listDecision`, each condition's `next` (and the step's default "
+        "`next`) is the DECISION WORD for the item (e.g. fulfill / backorder / "
+        "review / reject) — NOT the name of another step to go to.",
         "- Do NOT write dataType, segments, flow.result, or a `deterministic` "
         "flag — the builder fills those.",
         "- Keep step actions terse and imperative.",
@@ -125,31 +133,48 @@ async def generate_workflow(
     name: str,
     provider: LLMProvider,
     resources: str = "",
+    *,
+    validate_loop: int = 0,
+    base_dir=None,
+    dry_run=None,
 ) -> dict:
     """Generate an intent-only workflow source dict from NL `instructions`.
 
     `resources` (optional) is a manifest of workspace files/scripts the workflow
-    may read or run (e.g. where the input record lives, the data files, the
-    pricer script) — supplied because the policy prose often names data files
-    but not the exact path the runtime will find them at. Wiring resolvers /
-    itemSource / itemFacts to these paths is what keeps the generated workflow
-    deterministic instead of pausing to ask the user.
+    may read or run — wiring resolvers/itemSource/itemFacts to these paths keeps
+    the generated workflow deterministic instead of pausing to ask the user.
 
-    Returns the parsed workflow JSON (ready to write to disk and then
-    `workflow build`). Retries a few times because a model occasionally emits
-    slightly malformed JSON; a re-roll usually fixes it. Raises RuntimeError if
-    no attempt yields valid JSON of the expected shape."""
+    Validate→repair loop. Beyond the JSON-parse retries (`_MAX_ATTEMPTS`), set
+    `validate_loop > 0` to additionally CHECK each produced draft and, if it has
+    fixable problems, feed them back to the model to repair — up to that many
+    rounds. Checks:
+      * static (`workflow_validator.static_issues`, using `base_dir` to verify
+        file paths / item-list shapes), always run when validate_loop > 0;
+      * dry-run (optional `dry_run(doc) -> list[str]` callback supplied by the
+        caller — it builds + runs the draft on a sample input and returns any
+        runtime problems, e.g. "produced no decisions"). The agent generator
+        stays engine-agnostic; the eval/CLI provides the dry-run.
+    The loop stops as soon as a draft has zero issues, and returns the best
+    (fewest-issues) draft if none come back clean.
+
+    Returns the parsed workflow JSON. Raises RuntimeError if no attempt yields
+    valid JSON of the expected shape."""
+    from .workflow_validator import static_issues
+
     prompt = _prompt(instructions, name, resources)
     last_err = ""
     last_raw = ""
-    for attempt in range(_MAX_ATTEMPTS):
+    best_doc: dict | None = None
+    best_issues: list[str] | None = None
+    # JSON-parse retries get _MAX_ATTEMPTS; the validate loop adds repair rounds.
+    max_rounds = _MAX_ATTEMPTS + max(0, validate_loop)
+    repair_feedback = ""
+
+    for attempt in range(max_rounds):
         messages = [Message(role="user", blocks=[{"type": "text", "text": prompt}])]
-        # On a retry, tell the model the previous output failed to parse.
-        if attempt > 0:
-            messages.append(Message(role="user", blocks=[{"type": "text", "text": (
-                "Your previous response was not valid JSON "
-                f"({last_err}). Return ONLY the corrected, strict JSON object — "
-                "no prose, no markdown fences.")}]))
+        if attempt > 0 and repair_feedback:
+            messages.append(Message(role="user", blocks=[{"type": "text", "text":
+                repair_feedback}]))
         resp = await provider.complete(
             system=_SYSTEM, messages=messages, tools=[], hosted_mcp=[],
             skills=[], max_tokens=8192,
@@ -159,12 +184,52 @@ async def generate_workflow(
             doc = _extract_json(resp.text)
         except (json.JSONDecodeError, ValueError) as e:
             last_err = str(e)
+            repair_feedback = (
+                f"Your previous response was not valid JSON ({e}). Return ONLY "
+                "the corrected, strict JSON object — no prose, no markdown fences.")
             continue
-        if isinstance(doc, dict) and isinstance(doc.get("flow"), dict):
-            doc["name"] = name  # force the requested name (file + tool name)
-            return doc
-        last_err = "output missing a `flow` object"
+        if not (isinstance(doc, dict) and isinstance(doc.get("flow"), dict)):
+            last_err = "output missing a `flow` object"
+            repair_feedback = (
+                "Your previous response had no top-level `flow` object. Return "
+                "ONLY the corrected, strict JSON workflow object.")
+            continue
+
+        doc["name"] = name  # force the requested name (file + tool name)
+
+        # Validate (only when asked). Static first; then the caller's dry-run.
+        if validate_loop > 0:
+            issues = static_issues(doc, base_dir=base_dir)
+            if not issues and dry_run is not None:
+                try:
+                    issues = list(await dry_run(doc) or [])
+                except Exception as e:  # a dry-run crash is itself an issue
+                    issues = [f"Dry run failed: {type(e).__name__}: {e}"]
+            if not issues:
+                return doc  # clean draft
+            # Track the best-so-far in case we never get a clean one.
+            if best_issues is None or len(issues) < len(best_issues):
+                best_doc, best_issues = doc, issues
+            last_err = "; ".join(issues)
+            repair_feedback = (
+                "Your previous workflow draft has these problems — fix ALL of "
+                "them and return ONLY the corrected, strict JSON workflow "
+                "object:\n- " + "\n- ".join(issues))
+            continue
+
+        # No validation requested: keep the original light description gate.
+        desc = doc.get("description")
+        if not isinstance(desc, str) or not desc.strip():
+            last_err = "output missing a `description`"
+            repair_feedback = (
+                "Add a non-empty `description`. Return ONLY the corrected JSON.")
+            continue
+        return doc
+
+    if best_doc is not None:
+        # Validation never fully passed; return the closest draft (the caller
+        # may still build it — the build's defaults/optimizers tolerate a lot).
+        return best_doc
     raise RuntimeError(
         f"generator did not return valid workflow JSON after "
-        f"{_MAX_ATTEMPTS} attempts: {last_err}\nLast raw: {last_raw[:500]}"
-    )
+        f"{max_rounds} attempts: {last_err}\nLast raw: {last_raw[:500]}")

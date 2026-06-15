@@ -85,6 +85,23 @@ def apply_defaults(flow: dict) -> dict:
                 step[key] = sc.pop(key)
                 filled["hoisted"] += 1
 
+    # 0b. Normalize `itemVariables` shape. The engine expects a LIST of
+    #     {variableName, ...}; a generator sometimes emits a DICT keyed by name
+    #     (conflating it with itemFacts.derive). Coerce dict → list so the engine
+    #     doesn't crash with "'str' object has no attribute 'get'".
+    for step in steps.values():
+        if not isinstance(step, dict):
+            continue
+        iv = step.get("itemVariables")
+        if isinstance(iv, dict):
+            step["itemVariables"] = [
+                {"variableName": name,
+                 **(v if isinstance(v, dict) else {})}
+                for name, v in iv.items()
+                if isinstance(name, str)
+            ]
+            filled["hoisted"] += 1
+
     # 1. dataType upgrades from resolver kind (only when author left "string").
     for v in variables:
         if not isinstance(v, dict):

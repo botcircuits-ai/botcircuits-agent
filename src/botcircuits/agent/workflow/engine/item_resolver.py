@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -110,20 +111,54 @@ def _derive_field(rule: dict, item: dict, output: dict) -> Any:
     return None
 
 
+def _project_item_fields(step: dict, items: list) -> list[dict]:
+    """One fact dict per item carrying the step's declared `itemVariables`
+    fields, read straight from the item. Used when a listDecision step sources
+    items from a file but needs no computed (exec) facts. Falls back to the
+    whole item when no `itemVariables` are declared."""
+    names = [
+        v.get("variableName")
+        for v in (step.get("itemVariables") or [])
+        if isinstance(v, dict) and isinstance(v.get("variableName"), str)
+    ]
+    out: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        out.append({n: item.get(n) for n in names} if names else dict(item))
+    return out
+
+
 def resolve_item_facts(
     step: dict,
     *,
     base_dir: Path,
+    on_exec: "Callable[[list[str], str, int, bool], None] | None" = None,
 ) -> list[dict] | None:
     """Deterministically gather the per-item fact list for a listDecision step.
 
     Returns one fact dict per input item (ready for `_decide_list`), or None
-    when the step doesn't declare `itemSource`+`itemFacts` (caller then runs the
-    model path). Never raises."""
+    when the step declares neither an exec `itemFacts` nor an `itemSource`
+    (caller then runs the model path). Never raises.
+
+    `on_exec`, when given, is called once per subprocess the resolver runs with
+    `(argv, stdout, returncode, is_error)`. The engine uses this to surface each
+    deterministic exec as a tool_call/tool_result on the stream, so a workflow
+    that prices items inside the engine is still observable (and scoreable by
+    Tool Correctness) — without it those execs were invisible."""
     facts_spec = step.get("itemFacts")
-    if not isinstance(facts_spec, dict) or facts_spec.get("kind") != "exec":
-        return None
     items = _read_items(step, base_dir)
+    # No exec spec: if the step still names an `itemSource`, read the items from
+    # the file and project each one's declared `itemVariables` fields directly —
+    # no script, no model. This covers decision branches that need no computed
+    # facts (e.g. the fraud-reject path: it rejects every line item regardless of
+    # price/stock, so it only needs the items' own fields). Without this the
+    # engine fell back to the model, which hallucinated a single `UNKNOWN` item
+    # instead of reading the real SKUs.
+    if not isinstance(facts_spec, dict) or facts_spec.get("kind") != "exec":
+        if items is None:
+            return None
+        return _project_item_fields(step, items)
     if items is None:
         return None
     command = facts_spec.get("command")
@@ -137,17 +172,26 @@ def resolve_item_facts(
             continue
         argv = [_fmt(tok, item) for tok in command]
         output: dict = {}
+        stdout, returncode, is_error = "", 0, False
         try:
             proc = subprocess.run(
                 argv, cwd=str(base_dir), capture_output=True, text=True,
                 timeout=_EXEC_TIMEOUT_S,
             )
+            stdout, returncode = proc.stdout, proc.returncode
+            is_error = returncode != 0
             if facts_spec.get("parse") == "json" and proc.stdout.strip():
                 parsed = json.loads(proc.stdout)
                 if isinstance(parsed, dict):
                     output = parsed
-        except Exception:
-            output = {}
+        except Exception as exc:
+            output, is_error = {}, True
+            stdout = stdout or str(exc)
+        if on_exec is not None:
+            try:
+                on_exec(argv, stdout, returncode, is_error)
+            except Exception:
+                pass  # observability must never break resolution
         fact = {name: _derive_field(rule, item, output)
                 for name, rule in derive.items()
                 if isinstance(rule, dict)}

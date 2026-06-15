@@ -79,12 +79,73 @@ def test_engine_gathers_facts_and_decides_end_to_end(tmp_path: Path):
     assert decided[1]["line_total"] == 9000
 
 
-def test_returns_none_without_itemfacts(tmp_path: Path):
+def test_no_itemfacts_no_source_returns_none(tmp_path: Path):
+    """With neither an exec `itemFacts` nor a readable `itemSource`, there's
+    nothing to resolve deterministically -> None (caller runs the model)."""
     step = _step()
     del step["itemFacts"]
+    del step["itemSource"]
     assert resolve_item_facts(step, base_dir=tmp_path) is None
+
+
+def test_itemsource_without_itemfacts_projects_fields(tmp_path: Path):
+    """A listDecision step with an `itemSource` but NO exec `itemFacts` (e.g. the
+    fraud-reject path, which rejects every line regardless of price) must still
+    read the items from the file and project their declared `itemVariables` —
+    NOT fall back to the model, which hallucinated a single `UNKNOWN` item."""
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "order.json").write_text(json.dumps({"items": [
+        {"sku": "SKU-CABLE", "qty": 5},
+        {"sku": "SKU-PHONE", "qty": 2},
+    ]}))
+    step = {
+        "type": "listDecision",
+        "itemSource": {"file": "data/order.json", "path": "items"},
+        "itemVariables": [
+            {"variableName": "sku"},
+            {"variableName": "line_total"},
+        ],
+        "decisionKey": "decision",
+        "collectInto": "decisions",
+        "emit": ["sku", "line_total", "decision"],
+        "nullOn": {"line_total": ["reject"]},
+        "choices": [],            # no condition fires -> defaultNext
+        "defaultNext": "reject",
+    }
+    facts = resolve_item_facts(step, base_dir=tmp_path)
+    assert facts == [
+        {"sku": "SKU-CABLE", "line_total": None},
+        {"sku": "SKU-PHONE", "line_total": None},
+    ]
+    decided = _decide_list("wf", step, facts)
+    assert [(d["sku"], d["decision"], d["line_total"]) for d in decided] == [
+        ("SKU-CABLE", "reject", None),
+        ("SKU-PHONE", "reject", None),
+    ]
 
 
 def test_missing_order_file_returns_none(tmp_path: Path):
     _pricer(tmp_path)
     assert resolve_item_facts(_step(), base_dir=tmp_path) is None
+
+
+def test_on_exec_reports_each_subprocess(tmp_path: Path):
+    """`on_exec` fires once per priced item with (argv, stdout, rc, is_error) —
+    this is what lets the engine surface the pricer runs as tool calls so Tool
+    Correctness isn't blind to engine-driven execs."""
+    _pricer(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "order.json").write_text(json.dumps({"items": [
+        {"sku": "SKU-A", "qty": 5},
+        {"sku": "SKU-B", "qty": 1},
+    ]}))
+    seen: list[tuple] = []
+    facts = resolve_item_facts(
+        _step(), base_dir=tmp_path,
+        on_exec=lambda argv, out, rc, err: seen.append((argv, out, rc, err)),
+    )
+    assert facts is not None and len(seen) == 2
+    # argv interpolated per item; output is the pricer's JSON; clean exit.
+    assert seen[0][0] == ["python3", "bin/price.py", "SKU-A", "5"]
+    assert "found" in seen[0][1]          # captured stdout
+    assert seen[0][2] == 0 and seen[0][3] is False

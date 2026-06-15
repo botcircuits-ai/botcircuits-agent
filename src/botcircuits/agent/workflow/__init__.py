@@ -150,6 +150,7 @@ async def _run_engine(
     provider: LLMProvider | None,
     normalize_enabled: bool,
     last_user_message: str = "",
+    event_sink=None,
 ) -> str:
     """Engine-driven execution: the runner owns the loop, calling
     `run_segment` (the agent's `_run_segment`) once per branch-delimited
@@ -188,6 +189,7 @@ async def _run_engine(
         start_step_id=resume_step,
         slots=slots,
         resolve_unfilled=resolve_unfilled,
+        event_sink=event_sink,
     )
 
     if result.paused:
@@ -262,6 +264,7 @@ def workflow_tool(
                 wf_name, args, state, run_segment,
                 provider=provider, normalize_enabled=normalize_enabled,
                 last_user_message=ctx.get("last_user_message", ""),
+                event_sink=ctx.get("event_sink"),
             )
 
         result = await run_workflow(

@@ -73,3 +73,21 @@ def test_ordered_operators(operator, a, b, expected):
 ])
 def test_to_number(value, expected):
     assert to_number(value) == expected
+
+
+def test_is_coerces_bool_string_and_number():
+    """`is`/`is not` tolerate bool<->string and number<->string mismatches that
+    authors/generators commonly produce (e.g. `found is 'false'`)."""
+    from botcircuits.agent.workflow.engine.handlers.choice import evaluate_choices
+
+    def _route(var, op, val, slots):
+        choices = [{"operator": "AND", "expressionList": [
+            {"variable": var, "operator": op, "value": val}], "next": "hit"}]
+        msg = {"data": {"sessionContext": {"slots": slots}}}
+        return evaluate_choices(choices, msg, "miss")
+
+    assert _route("found", "is", "false", {"found": False}) == "hit"
+    assert _route("found", "is", "true", {"found": False}) == "miss"
+    assert _route("ok", "is not", "false", {"ok": True}) == "hit"
+    assert _route("total", "is", "5000", {"total": 5000}) == "hit"
+    assert _route("status", "is", "Clear", {"status": "clear"}) == "hit"  # case-insens
