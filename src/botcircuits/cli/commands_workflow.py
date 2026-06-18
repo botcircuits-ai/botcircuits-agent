@@ -311,18 +311,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     Thin CLI wrapper over `botcircuits.runtime.run_workflow._run` so the
     workflow-running skill can call one clean verb
-    (`botcircuits workflow run --name <wf>`) instead of `python -m
-    botcircuits.runtime.run_workflow`. Prints the same single-line JSON
-    contract the skill reads: {"status": "done"|"paused"|"error", ...}.
+    (`botcircuits workflow run --name <wf>`). The engine navigates the state
+    machine and dispatches each step to the agent runtime; this command just
+    starts it and prints the OUTCOME the calling agent reads:
+
+      {"status": "success", "message": "<summary>"}   — workflow completed
+      {"status": "failure", "message": "<reason>"}    — workflow could not run
+      {"status": "paused",  "question": "<ask user>"} — needs human feedback
+
+    `paused` is the only non-terminal outcome: the engine reached a step that
+    needs the user. The caller relays the question and resumes with --reply.
+    A `failure` is terminal — the caller surfaces it and does NOT retry.
     """
     from botcircuits.runtime.run_workflow import _run
     from botcircuits.agent.workflow.local import LocalWorkflowError
 
+    def _fail(message: str, code: int) -> int:
+        print(json.dumps({"status": "failure", "message": message}))
+        return code
+
     workflow_name = args.workflow_name or args.workflow_name_pos
     if not workflow_name:
-        print(json.dumps({"status": "error",
-                          "error": "`run` requires --name=<workflow name>"}))
-        return 2
+        return _fail("`run` requires --name=<workflow name>", 2)
 
     initial_args: dict = {}
     raw = (args.initial_args or "").strip()
@@ -330,13 +340,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as e:
-            print(json.dumps({"status": "error",
-                              "error": f"--initial-args not valid JSON: {e}"}))
-            return 2
+            return _fail(f"--initial-args not valid JSON: {e}", 2)
         if not isinstance(parsed, dict):
-            print(json.dumps({"status": "error",
-                              "error": "--initial-args must be a JSON object"}))
-            return 2
+            return _fail("--initial-args must be a JSON object", 2)
         initial_args = parsed
 
     try:
@@ -347,15 +353,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
             reply=args.reply,
         ))
     except LocalWorkflowError as e:
-        print(json.dumps({"status": "error", "error": str(e)}))
-        return 1
+        return _fail(str(e), 1)
     except Exception as e:  # pragma: no cover - defensive top-level guard
-        print(json.dumps({"status": "error",
-                          "error": f"{type(e).__name__}: {e}"}))
-        return 1
+        return _fail(f"{type(e).__name__}: {e}", 1)
 
-    print(json.dumps(result, ensure_ascii=False))
-    return 0
+    # Map the engine's internal result to the caller-facing outcome contract.
+    status = result.get("status")
+    if status == "paused":
+        print(json.dumps(
+            {"status": "paused", "question": result.get("question") or ""},
+            ensure_ascii=False))
+        return 0
+    if status == "done":
+        print(json.dumps(
+            {"status": "success", "message": result.get("summary") or ""},
+            ensure_ascii=False))
+        return 0
+    # `error` or anything unexpected → terminal failure.
+    return _fail(result.get("error") or "workflow run failed", 1)
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
