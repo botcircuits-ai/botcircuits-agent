@@ -5,61 +5,52 @@ description: Run a BotCircuits workflow by name as a deterministic state machine
 
 # Running a BotCircuits Workflow
 
-When the user asks to **run** a workflow (e.g. _"run order fulfillment"_), drive
-it as a deterministic state machine. **You** perform each action step in this
-session using your own tools — the engine decides every branch, ordering, and
-slot evaluation deterministically. You never decide which step comes next.
+When the user asks to **run** a workflow (e.g. _"run order fulfillment"_), you
+**kick it off and relay results** — you do NOT perform the steps yourself.
 
-You step through the workflow with a small driver, one action at a time:
+The deterministic engine owns control flow, and each **action step runs in a
+separate headless agent process** (the `claude-code` runtime spawns one
+`claude` process per segment). Your only jobs in this session are: start the
+run, answer when it pauses for **human feedback**, and relay the final summary.
 
 ```
-python -m botcircuits.runtime.step_workflow --name <wf> [--initial-args '{"k":"v"}']
+botcircuits workflow run --name <wf> [--initial-args '{"k":"v"}']
 ```
 
-It prints ONE JSON object per call telling you what to do next. **Always parse
-the JSON; never guess the next step.**
+Each call prints ONE JSON object. **Always parse it; never guess.**
 
 ## The loop
 
-1. **Start.** Identify the workflow name from the user's request (slug form,
-   e.g. "order fulfillment" → `order_fulfillment`). Confirm it is built — built
-   workflows live in `.botcircuits/workflows/.build/<name>.json`. If only the
-   raw source exists, build it first (`botcircuits workflow build --name <name>`
-   or the **workflow-authoring** skill). Then:
+1. **Start.** Resolve the workflow name (slug form, e.g. "order fulfillment" →
+   `order_fulfillment`). Confirm it is built — built workflows live in
+   `.botcircuits/workflows/.build/<name>.json`. If only the raw source exists,
+   build it first (`botcircuits workflow build --name <name>` or the
+   **botcircuits-workflow-authoring** skill). Then start the run:
 
    ```
-   python -m botcircuits.runtime.step_workflow --name <name> --restart \
-       [--initial-args '{...}']
+   botcircuits workflow run --name <name> [--initial-args '{...}']
    ```
 
    Put any values the user already gave you (order id, applicant name, …) in
-   `--initial-args` as a JSON object.
+   `--initial-args` as a JSON object. The runtime auto-detects `claude-code`;
+   pass `--runtime claude-code` to force it.
+
+   This single call runs the engine to completion **in the background process**:
+   it navigates every branch and dispatches each action step to its own headless
+   `claude` process. It only returns control to you when the workflow finishes
+   **or** when a step needs the user.
 
 2. **Read the result and act on `status`:**
 
-   - `"action"` — **perform `actions` now**, in order, with your own tools /
-     skills / replies. Then report what you observed by calling the driver
-     again with `--observed`, matching `report`:
+   - `"done"` — the workflow completed. Relay `summary` to the user and
+     **return to normal conversation**.
+
+   - `"paused"` — a step needs **human feedback**. Ask the user the `question`
+     and stop. When they answer, resume the run with their reply:
 
      ```
-     python -m botcircuits.runtime.step_workflow --name <name> \
-         --observed '{"slots": {"approved": true}, "items": []}'
+     botcircuits workflow run --name <name> --reply "<answer>"
      ```
-
-     `report.slots` lists the branch variables to fill (name, type,
-     description); `report.items` (only for list-decision steps) lists the
-     per-item facts to report, one object per element. **Report only values
-     you genuinely observed — never invent one.** Omit anything you don't have.
-
-   - `"question"` — **ask the user** the `question` and stop. When they answer,
-     continue with their reply:
-
-     ```
-     python -m botcircuits.runtime.step_workflow --name <name> --reply "<answer>"
-     ```
-
-   - `"done"` — the workflow is complete. Relay `summary` to the user and
-     **return to normal conversation**. Do NOT keep stepping.
 
    - `"error"` — surface the `error` message; don't retry blindly.
 
@@ -67,14 +58,17 @@ the JSON; never guess the next step.**
 
 ## Rules
 
-- The engine owns control flow. Your job per `action` is only: perform the
-  action(s), then report the requested `report` values. You do not pick the
-  next step, reorder, or skip — the engine does, from your reported values.
-- One action step at a time. Don't batch ahead or assume what's next.
-- Run state (the resume cursor + slots) persists in
-  `.botcircuits/workflows/.runs/<name>.json` between calls and is cleared when
-  the workflow ends.
+- **You are NOT the runtime.** Do not perform action steps, evaluate branches,
+  or decide what comes next in this session — the engine and the per-segment
+  agent processes do all of that. You only start the run, relay pauses for
+  human feedback, and relay the final result.
+- One `botcircuits workflow run` invocation runs the whole workflow (or until
+  the next human-feedback pause). Don't hand-crank it step by step.
+- Run state (resume cursor + slots) persists across the pause/resume boundary in
+  `.botcircuits/workflows/.runs/<name>.json` and is cleared when the workflow
+  ends.
 
-> This is the **inline / self** runtime: you (the host agent) are the runtime,
-> so you perform steps in-session — no nested process. A different host can run
-> the same workflow over its own CLI; see the runtime-providers docs.
+> This is the **external host** runtime: the engine runs in a background process
+> and spawns a separate `claude` process per action segment. The in-session
+> ("self") driver where the host agent performs every step itself is a separate
+> mode — not what this skill uses. See the runtime-providers docs.
