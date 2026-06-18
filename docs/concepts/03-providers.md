@@ -4,8 +4,16 @@
 
 ---
 
-A **provider** is the adapter that talks to one LLM vendor. The agent loop only
-knows the provider interface, so the same agent runs on any supported model.
+> **Note.** An *LLM provider* (this page) is distinct from a *[runtime
+> provider](11-runtime-providers.md)*. An LLM provider is how the **native**
+> runtime talks to a model vendor (Anthropic/OpenAI/Gemini). A runtime provider
+> is which *agent* drives a workflow (native vs. an external host like
+> claude-code). The native runtime uses an LLM provider internally; CLI runtime
+> providers use the host agent's own model instead.
+
+A **provider** is the adapter that talks to one LLM vendor. The native agent
+loop only knows the provider interface, so the same agent runs on any supported
+model.
 
 ## Supported
 

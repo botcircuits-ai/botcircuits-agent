@@ -1,0 +1,239 @@
+"""CLI agent runtime — shell out to a host agent (claude-code et al.).
+
+Headless, ONE process per segment, in an isolated working directory. The
+host CLI's own tools / MCP / model do the real work; we hand it the segment's
+actions as a prompt and read a strict-JSON object back on stdout. No SDK
+binding — the only contract is "print this JSON shape as your final output",
+which any CLI agent that can follow instructions satisfies.
+
+Reuse, not reinvention:
+  - The segment prompt reuses the engine's cache-stable `ENGINE_SYSTEM_PROMPT`
+    and `build_segment_user_message`; we only swap the trailing instruction
+    from "call the record_slots tool" to "print this JSON".
+  - Slot resolution keeps Tier-0 deterministic in-process (`slot_resolver`,
+    zero tokens, OS-independent); only Tier-2 semantic extraction crosses the
+    CLI boundary, reusing `variable_normalizer`'s prompt body and
+    hallucination guard.
+
+This class is the reference CLI impl; codex/openclaw select it via config
+(same JSON contract) until they need a bespoke output adapter.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from typing import Any
+
+from botcircuits.runtime.base import AgentRuntimeProvider, EventSink, RuntimeConfig
+from botcircuits.runtime.cli_exec import CliExecError, run_cli
+from botcircuits.runtime.result import (
+    normalized_slots_from_stdout,
+    segment_result_from_stdout,
+)
+from botcircuits.agent.workflow.engine.runner import SegmentResult
+from botcircuits.agent.workflow.engine.segment_exec import (
+    ENGINE_SYSTEM_PROMPT,
+    build_segment_user_message,
+)
+
+
+#: Appended to the engine system prompt so the CLI agent reports through
+#: stdout JSON instead of the (native-only) record_slots tool.
+_CLI_OUTPUT_CONTRACT = (
+    "\n\nOUTPUT CONTRACT. You have no record_slots tool here. After "
+    "performing this segment's action(s), print EXACTLY ONE JSON object as "
+    "your FINAL output and nothing after it:\n"
+    '  {"slots": {<branchVar: value>, ...}, '
+    '"items": [{<itemFact: value>, ...}], '
+    '"paused": false, "question": "", "text": "<short result>"}\n'
+    "Rules:\n"
+    "  - `slots`: the branch variables you were asked to report; omit any "
+    "you do not genuinely have, never invent one.\n"
+    "  - `items`: ONLY for a list-decision segment — one object of FACTS per "
+    "list element (never a decision/outcome word). Omit otherwise.\n"
+    "  - If an action needs information only the user can provide, set "
+    '`"paused": true` and put the question in `"question"`, then stop.\n'
+    "  - `text`: a short human-readable result line (optional).\n"
+    "  - Output JSON ONLY for that final object — no markdown fence is "
+    "required, but if you use one it must wrap the whole object."
+)
+
+
+def _resolve_tier2_prompt(
+    variables: list[dict],
+    slots: dict,
+    action_text: str,
+    last_user_message: str,
+) -> str:
+    """Build the Tier-2 extraction prompt, reusing the variable_normalizer
+    body so the schema/rules/guard wording stays single-sourced."""
+    from botcircuits.agent.workflow.variable_normalizer import _build_prompt
+
+    body = _build_prompt(
+        variables=variables,
+        raw_args=slots,
+        action_text=action_text,
+        last_assistant_message="",
+        last_user_message=last_user_message,
+    )
+    return (
+        "You produce strict JSON only — no commentary, no markdown fences, no "
+        "extra keys.\n\n" + body
+    )
+
+
+class ClaudeCodeRuntime(AgentRuntimeProvider):
+    """Drive a workflow via a headless CLI agent, one process per segment."""
+
+    def __init__(self, config: RuntimeConfig):
+        self.config = config
+        self.name = config.name or "claude-code"
+
+    # -- segment execution --------------------------------------------------
+
+    async def run_segment(
+        self,
+        *,
+        actions: list[str],
+        branch_variables: list[dict],
+        system_notes: list[str],
+        slots: dict[str, Any],
+        item_variables: list[dict] | None = None,
+        event_sink: EventSink | None = None,
+    ) -> SegmentResult:
+        """Run one segment by invoking the host CLI once.
+
+        `event_sink` is ignored — headless one-shot mode has no incremental
+        events to stream; the host shows its own progress.
+        """
+        user_msg = build_segment_user_message(
+            actions, branch_variables, system_notes,
+            item_variables=item_variables,
+        )
+        # The host CLI is stateless between segments, so it has no conversation
+        # history. When the engine resumes a paused segment after the user
+        # answered, that answer rides on the reserved `__last_user_message__`
+        # slot — surface it in the prompt so the CLI agent can act on it.
+        last_user = ""
+        if isinstance(slots, dict):
+            last_user = str(slots.get("__last_user_message__") or "")
+        context_block = (
+            f"\n\nMost recent user message (their reply to the previous "
+            f"step):\n{last_user}" if last_user else ""
+        )
+        prompt = (
+            ENGINE_SYSTEM_PROMPT
+            + _CLI_OUTPUT_CONTRACT
+            + "\n\n=== SEGMENT ===\n"
+            + user_msg
+            + context_block
+        )
+
+        try:
+            res = await run_cli(
+                self.config.command, prompt, timeout=self.config.timeout,
+            )
+        except CliExecError as e:
+            # Can't run the host CLI at all — surface as a paused question so
+            # the run yields cleanly instead of crashing the engine.
+            print(f"[runtime:{self.name}] {e}", file=sys.stderr)
+            return SegmentResult(
+                paused=True,
+                question=(
+                    f"The '{self.name}' runtime could not be started: {e}"
+                ),
+            )
+
+        if not res.ok:
+            print(
+                f"[runtime:{self.name}] segment CLI exited rc={res.returncode}"
+                f"{' (timeout)' if res.timed_out else ''}: "
+                f"{res.stderr.strip()[:300]}",
+                file=sys.stderr,
+            )
+
+        return segment_result_from_stdout(res.stdout)
+
+    # -- slot resolution ----------------------------------------------------
+
+    async def resolve_slots(
+        self,
+        *,
+        flow: dict,
+        step_id: str,
+        variables: list[dict],
+        slots: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Backfill empty branch variables: Tier-0 deterministic in-process,
+        then Tier-2 semantic extraction via the host CLI for the remainder."""
+        from botcircuits.agent.workflow.slot_resolver import resolve_slots as tier0
+        from botcircuits.agent.workflow.local import _action_text_for_step
+        from botcircuits.agent.workflow.variable_normalizer import (
+            _value_present_in_context,
+        )
+
+        out: dict[str, Any] = {}
+        last_user = (
+            slots.get("__last_user_message__", "")
+            if isinstance(slots, dict) else ""
+        )
+
+        # Tier 0 — deterministic, zero tokens.
+        resolved, unresolved = tier0(
+            flow=flow,
+            step_id=step_id,
+            variables=variables,
+            raw_args={},
+            saved_slots=slots,
+            last_user_message=last_user,
+        )
+        if resolved:
+            out.update(resolved)
+        if not unresolved:
+            return out
+
+        # Tier 2 — CLI semantic extraction for whatever Tier-0 left empty.
+        action_text = _action_text_for_step(flow, step_id)
+        prompt = _resolve_tier2_prompt(
+            unresolved, {**slots, **out}, action_text, last_user,
+        )
+        try:
+            res = await run_cli(
+                self.config.command, prompt, timeout=self.config.timeout,
+            )
+        except CliExecError as e:
+            print(f"[runtime:{self.name}] tier2 resolve skipped: {e}",
+                  file=sys.stderr)
+            return out
+
+        extracted = normalized_slots_from_stdout(res.stdout)
+        if not extracted:
+            return out
+
+        # Same guards the native normalizer applies: restrict to requested
+        # variable names and drop values not present in the source context.
+        allowed = {
+            v.get("variableName") for v in unresolved
+            if isinstance(v, dict) and isinstance(v.get("variableName"), str)
+        }
+        context_blob = "\n".join([
+            json.dumps({**slots, **out}, default=str),
+            action_text or "",
+            last_user or "",
+        ])
+        for name, value in extracted.items():
+            if name not in allowed:
+                continue
+            if not _value_present_in_context(value, context_blob):
+                print(
+                    f"[runtime:{self.name}] dropping hallucinated "
+                    f"{name}={value!r} (not in source context)",
+                    file=sys.stderr,
+                )
+                continue
+            out[name] = value
+        return out
+
+
+__all__ = ["ClaudeCodeRuntime"]

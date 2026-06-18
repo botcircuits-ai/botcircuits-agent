@@ -18,6 +18,7 @@ pieces fit together. Each page is a short overview — for full detail see the
 8. [Streaming](08-streaming.md) — watching a turn happen live.
 9. [Configuration & CLI](09-configuration-and-cli.md) — how it's set up and run.
 10. [Gateway](10-gateway.md) — exposing the agent over HTTP and chat channels.
+11. [Runtime Providers](11-runtime-providers.md) — using an existing host agent (claude-code, …) to run workflows.
 
 ---
 

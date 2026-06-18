@@ -151,11 +151,19 @@ async def _run_engine(
     normalize_enabled: bool,
     last_user_message: str = "",
     event_sink=None,
+    runtime=None,
 ) -> str:
     """Engine-driven execution: the runner owns the loop, calling
     `run_segment` (the agent's `_run_segment`) once per branch-delimited
     segment. Returns one summary line on completion, or the pending
     question when the workflow pauses for the user.
+
+    `runtime`, when given, is an `AgentRuntimeProvider` (e.g. a CLI host like
+    claude-code) supplying BOTH the segment runner and the slot-resolution
+    hook — the "use an existing agent as the loop provider" path. When None
+    (the in-process default), `run_segment` is the native agent callback and
+    slot resolution is the local Tier-0/Tier-2 closure. Either way the engine
+    itself is identical: it can't tell the providers apart.
 
     Pause/resume: on a user-interaction pause the runner yields; we stash
     the resume cursor + accumulated slots on `state` so the next call (the
@@ -179,9 +187,16 @@ async def _run_engine(
     if last_user_message:
         slots["__last_user_message__"] = last_user_message
 
-    resolve_unfilled = _make_resolve_unfilled(
-        provider=provider, normalize_enabled=normalize_enabled,
-    )
+    # A runtime provider supplies its own segment runner + resolve hook; in
+    # the native default we keep the passed-in callback and build the local
+    # Tier-0/Tier-2 closure.
+    if runtime is not None:
+        run_segment = lambda **kw: runtime.run_segment(event_sink=event_sink, **kw)
+        resolve_unfilled = lambda **kw: runtime.resolve_slots(**kw)
+    else:
+        resolve_unfilled = _make_resolve_unfilled(
+            provider=provider, normalize_enabled=normalize_enabled,
+        )
     result = await run_workflow_engine(
         flow,
         workflow_name=wf_name,
@@ -213,6 +228,7 @@ def workflow_tool(
     *,
     provider: LLMProvider | None = None,
     normalize_enabled: bool = True,
+    runtime=None,
 ) -> LocalTool:
     """Wrap a workflow record into a `LocalTool` the agent can call.
 
@@ -237,6 +253,14 @@ def workflow_tool(
     dict (filled by the agent loop) carrying `last_assistant_message`
     and `last_user_message`, which Layer B uses as part of its
     hallucination-guard source.
+
+    `runtime`, when given, is an `AgentRuntimeProvider` (e.g. claude-code via
+    CLI). It makes the engine drive the workflow through that external agent
+    instead of the in-process loop — this is the path the workflow-running
+    SKILL uses on a host that is NOT the native BotCircuits agent. When a
+    runtime is set the engine path is taken unconditionally (it doesn't need
+    a `run_segment` callback from the agent loop, since the runtime supplies
+    its own).
     """
     wf_name = record["name"]
     wf_desc = record.get("description") or f"Run workflow {wf_name}."
@@ -254,17 +278,20 @@ def workflow_tool(
     async def _handler(args: dict, context: dict | None = None) -> str:
         ctx = context or {}
 
-        # Engine-driven path: when the agent loop supplies a `run_segment`
-        # callback, the ENGINE owns the loop — one call drives the whole
-        # workflow (or up to the next user-interaction pause) and returns a
-        # single summary line, instead of yielding one step at a time.
+        # Engine-driven path. Taken when EITHER a runtime provider is bound
+        # (external agent like claude-code drives the loop) OR the in-process
+        # agent loop supplied a `run_segment` callback (native). In both cases
+        # the ENGINE owns the loop — one call drives the whole workflow (or up
+        # to the next user-interaction pause) and returns a single summary
+        # line, instead of yielding one step at a time.
         run_segment = ctx.get("run_segment")
-        if run_segment is not None:
+        if runtime is not None or run_segment is not None:
             return await _run_engine(
                 wf_name, args, state, run_segment,
                 provider=provider, normalize_enabled=normalize_enabled,
                 last_user_message=ctx.get("last_user_message", ""),
                 event_sink=ctx.get("event_sink"),
+                runtime=runtime,
             )
 
         result = await run_workflow(
@@ -398,6 +425,7 @@ async def register_workflows(
     *,
     provider: LLMProvider | None = None,
     normalize_enabled: bool = True,
+    runtime=None,
 ) -> tuple[list[str], list[str]]:
     """Discover workflows on disk and register each as a LocalTool on `reg`.
 
@@ -426,6 +454,7 @@ async def register_workflows(
             record,
             provider=provider,
             normalize_enabled=normalize_enabled,
+            runtime=runtime,
         )
         if reg.has(tool.name):
             existing = next(
@@ -454,4 +483,5 @@ __all__ = [
     "active_workflow_names",
     "workflow_branch_variables",
     "register_workflows",
+    "_make_resolve_unfilled",
 ]

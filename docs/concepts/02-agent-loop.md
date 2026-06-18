@@ -4,8 +4,14 @@
 
 ---
 
-The agent loop is the heart of the system: one turn of conversation, driven to
-completion.
+> **Note.** This page describes the **native** agent loop — now one of several
+> [runtime providers](11-runtime-providers.md), not the only way to run a
+> workflow. When the host is an existing agent (claude-code, …), that agent
+> supplies the intelligence and the native loop is bypassed. The native loop
+> remains the default and the CI/offline fallback.
+
+The agent loop is the heart of the native runtime: one turn of conversation,
+driven to completion.
 
 ## How a turn runs
 

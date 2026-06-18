@@ -23,6 +23,7 @@ It was split out of a single large file into topic-scoped pages under [docs/impl
 | [11. FastAPI Gateway & Message Gateway](docs/implementations/11-gateway.md) | §13–§13a | JSON + SSE HTTP surface and the multi-channel inbound→agent→outbound message gateway. |
 | [12. Conversation Store](docs/implementations/12-conversation-store.md) | §14 | In-memory session store + per-session locks. |
 | [13. Capability Matrix, Extension Points & Trade-offs](docs/implementations/13-reference.md) | §15–§18 | Per-provider capability table, how-to recipes for extending the system, named design trade-offs, and suggested next improvements. |
+| [14. Runtime Providers](docs/developer-guide/14-runtime-providers.md) | — | Using an **existing host agent** (claude-code, …) to run workflows: the `AgentRuntimeProvider` seam, the native (behavior-preserving) and CLI providers, runtime detection, and the workflow-authoring / workflow-running skills. |
 
 ---
 

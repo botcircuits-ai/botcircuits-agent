@@ -17,6 +17,9 @@ wheels/
 # BotCircuits local settings (do not commit)
 .botcircuits/settings.local.json
 
+# Transient workflow-run state (pause/resume cursors)
+.botcircuits/workflows/.runs/
+
 .playwright-mcp
 sandbox
 
