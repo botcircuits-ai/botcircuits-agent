@@ -11,7 +11,7 @@ of several ways to run a workflow (see [Runtime Providers](concepts/11-runtime-p
 and the default fallback when no external host agent is detected.
 
 > **You usually don't need this.** If you're running workflows inside an
-> existing agent (claude-code, codex, …), use the **workflow-running** skill —
+> existing agent (claude-code, codex, …), use the **botcircuits-workflow-running** skill —
 > see the [README](../README.md). This document covers the *self-contained*
 > BotCircuits agent: its CLI, configuration, tools, MCP, and gateway.
 

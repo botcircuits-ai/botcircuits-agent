@@ -12,8 +12,7 @@ claude > "run order fulfillment"
 Under the hood a BotCircuits workflow is a **deterministic state machine**: the
 engine owns the control flow (branching, ordering, slot evaluation) and is
 run-to-run predictable, while your agent supplies the LLM reasoning for each
-step. The result is predictable, token-efficient multi-step automation — without
-this project maintaining its own agent loop or LLM plumbing.
+step. The result is predictable, token-efficient multi-step automation 
 
 ![botcircuits-agent-solution](docs/solution.png)
 
@@ -25,18 +24,22 @@ BotCircuits ships **two skills** your agent loads:
 
 | Skill | The user says… | The agent does… |
 |---|---|---|
-| **workflow-authoring** | _"create an order fulfillment workflow with …"_ | Writes the workflow JSON and builds it. |
-| **workflow-running** | _"run order fulfillment"_ | Drives the deterministic engine, performing each step itself. |
+| **botcircuits-workflow-authoring** | _"create an order fulfillment workflow with …"_ | Writes the workflow JSON and builds it. |
+| **botcircuits-workflow-running** | _"run order fulfillment"_ | Kicks off the run and relays results — it does **not** perform the steps itself. |
 
-When a workflow runs, the engine walks the state machine and hands each action
-step back to your agent **in its current session** — your agent performs the
-action with its own tools, reports what it observed, and the engine
-deterministically decides the next step. The agent never picks the next step; it
-just does the work the engine asks for, one step at a time.
+When a workflow runs, your agent starts it with a single call and then steps
+back. The deterministic engine walks the state machine in a background process
+and dispatches each action step to **its own separate agent process** (the
+`claude-code` runtime spawns one headless `claude` per step). The engine decides
+every branch; the per-step process does the work. Control only returns to your
+session when a step needs **human feedback** — the run pauses with a question,
+you relay it to the user, and resume with their reply. On completion you relay
+the summary.
 
-This **inline / self** model means no nested process and no second model — the
-agent that read the skill is the one that runs the workflow. (A different host
-can run the same workflow over its CLI, or you can use the self-contained
+This **external-host** model keeps your interactive session free of the
+step-by-step grind: it only starts the run, answers human-feedback pauses, and
+reports the result. (You can also run the same workflow in-session with the
+inline _self_ runtime, or use the self-contained
 [native agent](docs/native-agent.md); see [Runtime Providers](docs/concepts/11-runtime-providers.md).)
 
 ---
@@ -53,10 +56,10 @@ uv venv --python 3.11 && source .venv/bin/activate
 uv sync
 ```
 
-The skills shell out to `python -m botcircuits.runtime.step_workflow`, so the
-`botcircuits` package must be importable in your agent's environment — the step
-above provides it. No LLM API key is needed: your host agent brings its own
-model.
+The skills shell out to the `botcircuits` CLI (e.g. `botcircuits workflow run`),
+so the `botcircuits` package must be installed and on PATH in your agent's
+environment — the step above provides it. No LLM API key is needed: your host
+agent brings its own model.
 
 ### 2. Install the skills into your agent
 
@@ -72,8 +75,10 @@ scripts/install-skills.sh --target ~/.hermes/skills
 scripts/install-skills.sh --link
 ```
 
-This copies `workflow-authoring` and `workflow-running` into the agent's skills
-directory. Your agent now picks them up by description.
+This copies `botcircuits-workflow-authoring` and `botcircuits-workflow-running`
+into the agent's skills directory (the `botcircuits-` prefix keeps them clearly
+separated from any other skills there). Your agent now picks them up by
+description.
 
 ### 3. Use them in natural language
 
@@ -87,8 +92,9 @@ claude > "run order fulfillment for order #1024"
 ```
 
 The authoring skill writes `.botcircuits/workflows/order_fulfillment.json` and
-builds it; the running skill steps the agent through it, asking you for input
-only when a `question` step needs it, and reporting the result at the end.
+builds it; the running skill kicks off the engine, which runs each step in its
+own agent process, pausing to ask you for input only when a step needs human
+feedback, and reporting the result at the end.
 
 ---
 
@@ -155,8 +161,8 @@ ships its functionality *as* skills:
 
 ```
 skills/
-├── workflow-authoring/SKILL.md
-├── workflow-running/SKILL.md
+├── botcircuits-workflow-authoring/SKILL.md
+├── botcircuits-workflow-running/SKILL.md
 └── botcircuits-faq/SKILL.md
 ```
 

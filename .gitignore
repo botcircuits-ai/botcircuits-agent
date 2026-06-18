@@ -14,14 +14,14 @@ wheels/
 .env.*
 !.env.example
 
-# BotCircuits local settings (do not commit)
-.botcircuits/settings.local.json
-
-# Transient workflow-run state (pause/resume cursors)
-.botcircuits/workflows/.runs/
+# BotCircuits settings
+.botcircuits/
 
 .playwright-mcp
 sandbox
 
 .claude/settings.json
 CLAUDE.md
+
+.claude/skills/botcircuits*
+

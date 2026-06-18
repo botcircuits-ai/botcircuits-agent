@@ -1,5 +1,5 @@
 ---
-name: workflow-running
+name: botcircuits-workflow-running
 description: Run a BotCircuits workflow by name as a deterministic state machine. Use whenever the user asks to run, start, execute, or kick off a named workflow or process (e.g. "run order fulfillment", "start the loan workflow", "process this order").
 ---
 

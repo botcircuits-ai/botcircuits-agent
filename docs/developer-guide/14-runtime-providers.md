@@ -83,7 +83,7 @@ subprocess is ever spawned.
 
 ## Running
 
-Inline (host agent performs each step in-session — the workflow-running skill):
+Inline (host agent performs each step in-session — the botcircuits-workflow-running skill):
 
 ```bash
 python -m botcircuits.runtime.step_workflow --name <wf> --restart [--initial-args '{…}']

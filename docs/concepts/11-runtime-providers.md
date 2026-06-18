@@ -15,10 +15,10 @@ This is the BotCircuits direction: **stop maintaining our own agent loop / LLM
 plumbing and let an existing host agent supply the intelligence.** The project
 ships two skills a host agent loads:
 
-- **workflow-authoring** — turn a natural-language description into a built
-  workflow JSON (pure generation + validation; no runtime needed).
-- **workflow-running** — drive a built workflow through the engine, dispatching
-  each action/slot decision to the host runtime.
+- **botcircuits-workflow-authoring** — turn a natural-language description into a
+  built workflow JSON (pure generation + validation; no runtime needed).
+- **botcircuits-workflow-running** — drive a built workflow through the engine,
+  dispatching each action/slot decision to the host runtime.
 
 ## The providers
 
@@ -59,7 +59,7 @@ mechanism reuses the engine's own pause/resume: `run_segment` returns a paused
 result carrying the action, the engine yields its resume cursor, and the
 `step_workflow` driver surfaces the action to the host. The host performs it,
 reports observed values, and the next call seeds them so the engine advances.
-This is what the **workflow-running** skill drives; the host never spawns a
+This is what the **botcircuits-workflow-running** skill drives; the host never spawns a
 second model.
 
 ## Selecting the runtime
@@ -67,7 +67,7 @@ second model.
 Resolution order (first hit wins): explicit config (`$BOTCIRCUITS_RUNTIME`, or
 `runtime` in `.botcircuits/settings.json`) → env markers the host sets
 (`CLAUDECODE`, `CODEX_*`, …) → a `which` probe for a known CLI binary →
-`native`. The `self` runtime is selected explicitly (the workflow-running skill
+`native`. The `self` runtime is selected explicitly (the botcircuits-workflow-running skill
 drives it), never auto-probed. A per-provider argv template lives in config, so
 adding a CLI that emits the same JSON contract is configuration, not code.
 

@@ -1,5 +1,5 @@
 ---
-name: workflow-authoring
+name: botcircuits-workflow-authoring
 description: Create or edit a BotCircuits workflow from a natural-language description. Use whenever the user asks to create, author, design, build, or edit a workflow / journey / process flow (e.g. "create an order fulfillment workflow with ...", "add a refund branch to the loan workflow").
 ---
 

@@ -3,6 +3,10 @@
   workflow build --name <workflow_name>   Generate expressions + variables
                                           for the choice steps of a workflow
                                           and write them back to the file.
+  workflow run --name <workflow_name> [--initial-args <json>] [--reply <text>]
+                                          Run a built workflow: drive the
+                                          deterministic engine and dispatch
+                                          each step to the agent runtime.
   workflow eval [--dataset <path>] [--repeats N] [--report <path>]
                                           Run the evaluation framework
                                           comparing the STM engine to a
@@ -81,6 +85,34 @@ def add_workflow_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Skip the action-optimizer pass (keep authored step action text "
              "verbatim). Optimization rewrites verbose actions into terse, "
              "tool-directed instructions to cut per-run tokens.",
+    )
+
+    run_p = wf_subs.add_parser(
+        "run",
+        help="Run a built workflow: drive the deterministic engine, "
+             "dispatching each action step to the selected agent runtime. "
+             "Pauses for human feedback; resume with --reply.",
+    )
+    run_p.add_argument(
+        "--name", dest="workflow_name", default=None,
+        help="Workflow name (the built workflow's `name` / filename stem).",
+    )
+    run_p.add_argument(
+        "workflow_name_pos", nargs="?", default=None,
+        help=argparse.SUPPRESS,
+    )
+    run_p.add_argument(
+        "--initial-args", dest="initial_args", default="",
+        help="JSON object of initial slot values to seed the run "
+             "(e.g. '{\"order_id\": \"1024\"}').",
+    )
+    run_p.add_argument(
+        "--runtime", dest="runtime_name", default=None,
+        help="Force a runtime (claude-code, codex, …). Default: auto-detect.",
+    )
+    run_p.add_argument(
+        "--reply", dest="reply", default=None,
+        help="User's answer to a prior human-feedback pause; resumes the run.",
     )
 
     gen_p = wf_subs.add_parser(
@@ -175,6 +207,8 @@ def run_workflow_command(args: argparse.Namespace) -> int:
     """Entry point for `botcircuits-cli workflow ...`. Returns exit code."""
     if args.workflow_cmd == "build":
         return _cmd_build(args)
+    if args.workflow_cmd == "run":
+        return _cmd_run(args)
     if args.workflow_cmd == "generate":
         return _cmd_generate(args)
     if args.workflow_cmd == "eval":
@@ -270,6 +304,58 @@ def _make_dry_run(samples: list, base_dir):
         return uniq[:12]
 
     return _dry_run
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Run a built workflow through the deterministic engine + agent runtime.
+
+    Thin CLI wrapper over `botcircuits.runtime.run_workflow._run` so the
+    workflow-running skill can call one clean verb
+    (`botcircuits workflow run --name <wf>`) instead of `python -m
+    botcircuits.runtime.run_workflow`. Prints the same single-line JSON
+    contract the skill reads: {"status": "done"|"paused"|"error", ...}.
+    """
+    from botcircuits.runtime.run_workflow import _run
+    from botcircuits.agent.workflow.local import LocalWorkflowError
+
+    workflow_name = args.workflow_name or args.workflow_name_pos
+    if not workflow_name:
+        print(json.dumps({"status": "error",
+                          "error": "`run` requires --name=<workflow name>"}))
+        return 2
+
+    initial_args: dict = {}
+    raw = (args.initial_args or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(json.dumps({"status": "error",
+                              "error": f"--initial-args not valid JSON: {e}"}))
+            return 2
+        if not isinstance(parsed, dict):
+            print(json.dumps({"status": "error",
+                              "error": "--initial-args must be a JSON object"}))
+            return 2
+        initial_args = parsed
+
+    try:
+        result = asyncio.run(_run(
+            workflow_name,
+            initial_args=initial_args,
+            runtime_name=args.runtime_name,
+            reply=args.reply,
+        ))
+    except LocalWorkflowError as e:
+        print(json.dumps({"status": "error", "error": str(e)}))
+        return 1
+    except Exception as e:  # pragma: no cover - defensive top-level guard
+        print(json.dumps({"status": "error",
+                          "error": f"{type(e).__name__}: {e}"}))
+        return 1
+
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:

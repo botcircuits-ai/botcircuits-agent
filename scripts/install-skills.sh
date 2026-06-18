@@ -2,9 +2,11 @@
 # ============================================================================
 # BotCircuits — install the workflow skills into a host agent
 # ============================================================================
-# Copies the `workflow-authoring` and `workflow-running` skills into a host
-# agent's skills directory so the agent (claude-code, hermes, …) can author and
-# run BotCircuits workflows from natural language:
+# Copies the `botcircuits-workflow-authoring` and `botcircuits-workflow-running`
+# skills into a host agent's skills directory so the agent (claude-code, hermes,
+# …) can author and run BotCircuits workflows from natural language. The
+# `botcircuits-` prefix keeps these skills clearly separated from any others in
+# the target directory:
 #
 #     claude > "create an order fulfillment workflow with ..."
 #     claude > "run order fulfillment"
@@ -20,10 +22,10 @@
 #   --link           Symlink the skill folders instead of copying (edits to the
 #                    repo are reflected live; good for development).
 #
-# The skills shell out to `python -m botcircuits.runtime.step_workflow`, so the
-# `botcircuits` package must be importable in the host agent's environment
-# (install this repo, e.g. `uv sync` / `pip install -e .`). This script prints a
-# reminder if it can't import it.
+# The skills shell out to the `botcircuits` CLI (e.g. `botcircuits workflow
+# run`), so the `botcircuits` package must be installed and on PATH in the host
+# agent's environment (install this repo, e.g. `uv sync` / `pip install -e .`).
+# This script prints a reminder if it can't import it.
 # ============================================================================
 
 set -euo pipefail
@@ -52,7 +54,7 @@ warn() { printf '%s!%s %s\n' "$YLW" "$RST" "$*" >&2; }
 
 mkdir -p "$TARGET"
 
-for skill in workflow-authoring workflow-running; do
+for skill in botcircuits-workflow-authoring botcircuits-workflow-running; do
     src="$SKILLS_SRC/$skill"
     dst="$TARGET/$skill"
     [ -d "$src" ] || { echo "missing skill source: $src" >&2; exit 1; }
