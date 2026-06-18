@@ -58,6 +58,10 @@ _REGISTRY: dict[str, _RuntimeSpec] = {
         CLAUDE_CODE,
         env_markers=("CLAUDECODE", "CLAUDE_CODE", "CLAUDE_CODE_ENTRYPOINT"),
         binary="claude",
+        # Headless, one segment per process. No permission flag: the segment
+        # runs in the MAIN agent's working directory (see ClaudeCodeRuntime),
+        # so it inherits the project's `.claude/settings.json` permission rules
+        # — the same policy the user already approved for the main session.
         command=("claude", "-p", "{prompt}", "--output-format", "json"),
     ),
     # Stubs: registered for detection/selection now; their result parsing
@@ -133,6 +137,11 @@ def runtime_config(name: str, settings: dict | None = None) -> RuntimeConfig:
     spec = _REGISTRY.get(name)
     command = list(spec.command) if spec else []
     timeout = 600.0
+    # Run CLI segments in the main agent's working directory so the spawned
+    # CLI inherits the project's `.claude/settings.json` permission rules
+    # (the policy the user already approved for the main session). Settings
+    # may override this; `None` falls back to a fresh isolated temp dir.
+    cwd: str | None = os.getcwd()
 
     if isinstance(settings, dict):
         overrides = (settings.get("runtimes") or {}).get(name) or {}
@@ -141,8 +150,11 @@ def runtime_config(name: str, settings: dict | None = None) -> RuntimeConfig:
                 command = [str(t) for t in overrides["command"]]
             if isinstance(overrides.get("timeout"), (int, float)):
                 timeout = float(overrides["timeout"])
+            if "cwd" in overrides:
+                val = overrides["cwd"]
+                cwd = str(val) if isinstance(val, str) and val else None
 
-    return RuntimeConfig(name=name, command=command, timeout=timeout)
+    return RuntimeConfig(name=name, command=command, timeout=timeout, cwd=cwd)
 
 
 def select_runtime(

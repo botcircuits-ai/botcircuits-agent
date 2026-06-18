@@ -29,11 +29,16 @@ class RuntimeConfig:
     token ``{prompt}`` is replaced with the actual segment/extraction prompt
     (e.g. ``["claude", "-p", "{prompt}", "--output-format", "json"]``).
     `timeout` bounds a single CLI invocation.
+    `cwd` is the working directory each CLI segment runs in. When set to the
+    main agent's working directory, the spawned CLI inherits that project's
+    `.claude/settings.json` permission rules (the policy the user already
+    approved). When ``None``, each segment gets a fresh isolated temp dir.
     """
 
     name: str
     command: list[str] = field(default_factory=list)
     timeout: float = 600.0
+    cwd: str | None = None
 
 
 #: The event-sink callable the streaming path threads through so a segment's

@@ -6,9 +6,11 @@ means:
   - **Injection safety.** We build argv as a list and call
     `asyncio.create_subprocess_exec` (never a shell string), so a prompt that
     contains shell metacharacters is just data.
-  - **Isolation.** Each invocation runs in a fresh temporary working
-    directory (the "isolated session context" per the design), torn down
-    after — one segment never sees another's scratch files.
+  - **Working directory.** A caller may pin `cwd` (e.g. the main agent's
+    project dir, so the spawned CLI inherits that project's permission
+    settings). When `cwd` is omitted, the invocation runs in a fresh
+    temporary directory, torn down after — an isolated session context where
+    one segment never sees another's scratch files.
   - **One OS seam.** This stage targets Linux command interfaces only. The
     `_supported_platform()` check is the single documented place a Windows /
     macOS path would branch later; everything above this layer is

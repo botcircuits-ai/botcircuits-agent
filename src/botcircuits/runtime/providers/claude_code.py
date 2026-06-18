@@ -133,6 +133,7 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
         try:
             res = await run_cli(
                 self.config.command, prompt, timeout=self.config.timeout,
+                cwd=self.config.cwd,
             )
         except CliExecError as e:
             # Can't run the host CLI at all — surface as a paused question so
@@ -201,6 +202,7 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
         try:
             res = await run_cli(
                 self.config.command, prompt, timeout=self.config.timeout,
+                cwd=self.config.cwd,
             )
         except CliExecError as e:
             print(f"[runtime:{self.name}] tier2 resolve skipped: {e}",
