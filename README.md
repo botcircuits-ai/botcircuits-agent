@@ -42,6 +42,72 @@ reports the result. (You can also run the same workflow in-session with the
 inline _self_ runtime, or use the self-contained
 [native agent](docs/native-agent.md); see [Runtime Providers](docs/concepts/11-runtime-providers.md).)
 
+### The two paths
+
+The diagram uses one example — an **order fulfillment** workflow: _check stock →
+if all in stock, ship; otherwise back-order_.
+
+```
+            ┌──────────────────────────────────────────────────────────────┐
+            │  AGENT  (Claude / Hermes / …)  — has the intelligence + tools │
+            └──────────────────────────────────────────────────────────────┘
+                 │                                          │
+   "create an order…"                              "run order_fulfillment"
+   (authoring path)                                (running path)
+                 │                                          │
+                 ▼                                          ▼
+   ┌───────────────────────────┐          ┌───────────────────────────────────┐
+   │ skill: workflow-authoring │          │ skill: workflow-running           │
+   │  • LLM writes the JSON    │          │  • find the workflow name         │
+   │  • `workflow build`       │          │  • `workflow run --name …`        │
+   └───────────────────────────┘          │  • relay {success|failure|pause}  │
+                 │                         └───────────────────────────────────┘
+                 ▼                                          │ starts
+   ┌───────────────────────────┐                           ▼
+   │ .botcircuits/workflows/   │          ┌───────────────────────────────────────────┐
+   │   order_fulfillment.json  │ ───────► │   WORKFLOW ENGINE  (Python, deterministic)│
+   │   .build/…  (runnable)    │  loads   │   owns ALL flow navigation + branching    │
+   └───────────────────────────┘          └───────────────────────────────────────────┘
+                                                           │
+                                            ┌──────────────┴───────────────┐
+                                            ▼                              │
+                            ┌───────────────────────────────┐             │
+                  ┌────────►│ step: check_stock             │             │
+                  │         │  action text → run on AGENT ──┼──► action runs on a separate
+                  │         └───────────────────────────────┘    AGENT session (it has the
+                  │                         │ returns slots       tools); result flows back
+                  │   ┌─────────────────────┴───────────────┐
+                  │   │ SLOT RESOLVE:                        │
+                  │   │  • Tier-0 deterministic (in engine)  │
+                  │   │  • else ask AGENT to extract (Tier-2)│
+                  │   └─────────────────────┬────────────────┘
+                  │                         ▼
+                  │         ┌───────────────────────────────┐
+                  │         │ BRANCH (pure Python, no LLM):  │
+                  │         │  all_items_in_stock == true ?  │
+                  │         └───────────────────────────────┘
+                  │            yes │                 │ no
+                  │                ▼                 ▼
+                  │      ┌──────────────┐   ┌──────────────────┐
+                  └──────┤ step: ship   │   │ step: backorder  │   (next step's action
+                  next   │  (action on  │   │  (action on      │    again runs on the
+                         │   AGENT)     │   │   AGENT)         │    AGENT — loop repeats)
+                         └──────┬───────┘   └────────┬─────────┘
+                                └─────────┬──────────┘
+                                          ▼
+                            ┌───────────────────────────────────┐
+                            │ engine ends → {status, message}   │
+                            │ back to the calling AGENT session │
+                            └───────────────────────────────────┘
+```
+
+Key invariant: the **engine never decides anything with an LLM**. It walks the
+compiled state machine, evaluates branches in pure Python, and resolves
+deterministic slots in-process. The agent is called for exactly two things —
+**performing a step's action** (it has the tools and reasoning the workflow does
+not) and **Tier-2 slot extraction** — and the run only pauses back to your
+session when a step needs **human feedback**.
+
 ---
 
 ## Quick Start
