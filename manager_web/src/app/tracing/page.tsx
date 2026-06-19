@@ -81,18 +81,19 @@ function TracingList() {
                 <Th>Events</Th>
                 <Th>Started</Th>
                 <Th>Session</Th>
+                <Th></Th>
               </tr>
             </thead>
             <tbody>
               {sessions.map((s) => (
                 <tr
                   key={s.session_id}
-                  className="border-t border-border hover:bg-elevated/50"
+                  className="border-t border-border hover:bg-elevated/50 cursor-pointer"
                 >
                   <Td>
                     <Link
                       href={`/tracing/${s.session_id}`}
-                      className="font-medium text-fg hover:text-brand-600 dark:hover:text-brand-400"
+                      className="font-medium text-brand-600 dark:text-brand-400"
                     >
                       {s.workflow ?? "—"}
                     </Link>
@@ -108,6 +109,15 @@ function TracingList() {
                       {s.session_id.slice(0, 10)}
                     </code>
                   </Td>
+                  <Td className="text-right w-10">
+                    <Link
+                      href={`/tracing/${s.session_id}`}
+                      aria-label={`View trace for ${s.workflow ?? s.session_id}`}
+                      className="inline-flex text-brand-600 dark:text-brand-400 hover:bg-elevated rounded-lg p-1.5"
+                    >
+                      <ChevronIcon />
+                    </Link>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -117,6 +127,22 @@ function TracingList() {
     </div>
   );
 }
+
+const ChevronIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className="inline-block"
+  >
+    <path d="m9 18 6-6-6-6" />
+  </svg>
+);
 
 const Th = ({ children }: { children: React.ReactNode }) => (
   <th className="text-left font-medium px-4 py-3">{children}</th>
