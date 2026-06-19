@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { GITHUB_URL } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
@@ -10,6 +11,7 @@ import { Logo } from "./Logo";
 import {
   GithubIcon,
   MoonIcon,
+  SidebarIcon,
   SignOutIcon,
   SunIcon,
   TraceIcon,
@@ -28,29 +30,68 @@ const NAV: NavItem[] = [
   { label: "Workflows", href: "/workflows", icon: <WorkflowIcon />, soon: true },
 ];
 
-/** The authenticated app frame: left nav + top bar + content slot. */
+const COLLAPSE_KEY = "bc_manager_nav_collapsed";
+
+/** The authenticated app frame: collapsible left nav + top bar + content. */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { signOut } = useAuth();
   const { theme, toggle } = useTheme();
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Restore the collapsed preference (persists across navigations/sessions).
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  function toggleCollapsed() {
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
 
   return (
-    <div className="min-h-screen grid grid-cols-[15rem_1fr] max-md:grid-cols-1">
+    <div
+      className={cx(
+        "min-h-screen grid max-md:grid-cols-1",
+        collapsed ? "grid-cols-[4rem_1fr]" : "grid-cols-[15rem_1fr]",
+      )}
+    >
       {/* Sidebar */}
       <aside className="border-r border-border bg-surface flex flex-col max-md:hidden">
-        <div className="h-16 flex items-center px-5 border-b border-border">
-          <Logo />
+        <div
+          className={cx(
+            "h-16 flex items-center border-b border-border",
+            collapsed ? "justify-center px-0" : "px-5",
+          )}
+        >
+          {collapsed ? <Logo compact /> : <Logo />}
         </div>
+
         <nav className="flex-1 p-3 space-y-1">
-          <p className="px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted">
-            Platform
-          </p>
+          {!collapsed && (
+            <p className="px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted">
+              Platform
+            </p>
+          )}
           {NAV.map((item) => {
             const active = pathname.startsWith(item.href);
             const content = (
               <span
+                title={collapsed ? item.label : undefined}
                 className={cx(
-                  "flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium",
+                  "flex items-center rounded-xl text-sm font-medium",
+                  collapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2",
                   active
                     ? "bg-brand/15 text-fg ring-1 ring-brand/30"
                     : "text-muted hover:text-fg hover:bg-elevated",
@@ -60,8 +101,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span className={active ? "text-brand-600 dark:text-brand-400" : ""}>
                   {item.icon}
                 </span>
-                {item.label}
-                {item.soon && (
+                {!collapsed && item.label}
+                {!collapsed && item.soon && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted border border-border rounded-full px-1.5 py-0.5">
                     Soon
                   </span>
@@ -77,8 +118,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="p-3 border-t border-border text-xs text-muted">
-          BotCircuits Manager · v0.1
+
+        {/* Collapse toggle */}
+        <div className="p-3 border-t border-border">
+          <button
+            onClick={toggleCollapsed}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={cx(
+              "flex items-center rounded-lg text-muted hover:text-fg hover:bg-elevated w-full",
+              collapsed ? "justify-center py-2.5" : "gap-2 px-3 py-2 text-sm",
+            )}
+          >
+            <SidebarIcon className="w-[18px] h-[18px]" />
+            {!collapsed && <span>Collapse</span>}
+          </button>
+          {!collapsed && (
+            <div className="px-1 pt-2 text-xs text-muted">
+              BotCircuits Manager · v0.1
+            </div>
+          )}
         </div>
       </aside>
 

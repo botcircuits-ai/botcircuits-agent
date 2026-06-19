@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import dagre from "@dagrejs/dagre";
 import ReactFlow, {
   Background,
   Controls,
   Handle,
   MarkerType,
+  MiniMap,
   Position,
   type Edge,
   type Node,
@@ -107,24 +109,38 @@ export function TraceGraph({
   selectedStep: string | null;
   onSelectStep: (step: string | null) => void;
 }) {
+  const [onlyVisited, setOnlyVisited] = useState(false);
+
   const { nodes, edges, hasGraph } = useMemo(
-    () => buildGraph(doc, selectedStep),
-    [doc, selectedStep],
+    // Memory (slot) nodes are always shown; "Only path taken" collapses the
+    // graph to the steps that actually ran.
+    () => buildGraph(doc, selectedStep, { showMemory: true, onlyVisited }),
+    [doc, selectedStep, onlyVisited],
   );
 
   return (
-    <div className="h-[520px] rounded-2xl border border-border bg-bg overflow-hidden relative">
-      {!hasGraph && (
-        <div className="absolute top-2 left-2 z-10 text-[11px] text-muted bg-surface/80 rounded px-2 py-1 border border-border">
-          Older session without graph data — showing visited steps only.
-        </div>
-      )}
+    <div className="h-[600px] rounded-2xl border border-border bg-bg overflow-hidden relative">
+      {/* controls */}
+      <div className="absolute top-2 left-2 z-10 flex flex-wrap gap-1.5">
+        {!hasGraph && (
+          <span className="text-[11px] text-muted bg-surface/90 rounded px-2 py-1 border border-border">
+            Older session — visited steps only.
+          </span>
+        )}
+        {hasGraph && (
+          <Toggle on={onlyVisited} onClick={() => setOnlyVisited((v) => !v)}>
+            Only path taken
+          </Toggle>
+        )}
+      </div>
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.2 }}
+        fitViewOptions={{ padding: 0.15 }}
+        minZoom={0.2}
         proOptions={{ hideAttribution: true }}
         onNodeClick={(_, node) => {
           if (node.type === "step") onSelectStep(node.data.label);
@@ -134,25 +150,71 @@ export function TraceGraph({
       >
         <Background gap={18} size={1} className="!text-border" color="currentColor" />
         <Controls showInteractive={false} />
+        <MiniMap
+          pannable
+          zoomable
+          className="!bg-surface !border !border-border rounded-lg"
+          maskColor="rgb(var(--bg) / 0.6)"
+          nodeColor={(n) =>
+            n.type === "slot"
+              ? "rgb(166 221 31)"
+              : (n.data as any)?.visited
+                ? "rgb(130 176 21)"
+                : "rgb(var(--border))"
+          }
+          nodeStrokeWidth={2}
+        />
       </ReactFlow>
     </div>
+  );
+}
+
+function Toggle({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-[11px] rounded-md px-2 py-1 border ${
+        on
+          ? "bg-brand/15 border-brand/40 text-fg"
+          : "bg-surface/90 border-border text-muted hover:text-fg"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
 function buildGraph(
   doc: SessionDoc,
   selectedStep: string | null,
+  opts: { showMemory: boolean; onlyVisited: boolean } = {
+    showMemory: true,
+    onlyVisited: false,
+  },
 ): { nodes: Node[]; edges: Edge[]; hasGraph: boolean } {
   const graph = doc.workflow?.graph;
   const graphSteps = graph?.steps ?? {};
-  const stepIds = Object.keys(graphSteps);
-  const hasGraph = stepIds.length > 0;
+  const allStepIds = Object.keys(graphSteps);
+  const hasGraph = allStepIds.length > 0;
 
   // --- trace-derived overlays ---------------------------------------------
   const visited = new Set<string>();
   for (const ev of doc.trace as TraceEvent[]) {
     if (ev.type === "step_enter" && ev.step) visited.add(ev.step);
   }
+
+  // "Only path taken" collapses the graph to the steps that actually ran.
+  const stepIds = opts.onlyVisited
+    ? allStepIds.filter((id) => visited.has(id))
+    : allStepIds;
   // The engine's branch events tell us which edge was actually taken.
   const takenNextByStep = new Map<string, string | null>();
   for (const ev of doc.trace) {
@@ -179,67 +241,22 @@ function buildGraph(
     return fallbackGraph(doc, selectedStep, durByStep);
   }
 
-  // --- layout: BFS layering from the start step ---------------------------
-  const startId = graph?.start && graphSteps[graph.start] ? graph.start : stepIds[0];
-  const targetsOf = (id: string): string[] => {
+  // --- step nodes (positions assigned by Dagre below) ---------------------
+  const nodes: Node[] = stepIds.map((id) => {
     const s = graphSteps[id];
-    const outs = new Set<string>();
-    (s?.choices ?? []).forEach((c) => c.next && outs.add(c.next));
-    if (s?.next) outs.add(s.next);
-    return [...outs].filter((t) => graphSteps[t]); // only real steps
-  };
-
-  const depth = new Map<string, number>();
-  const queue: string[] = [startId];
-  depth.set(startId, 0);
-  while (queue.length) {
-    const id = queue.shift()!;
-    for (const t of targetsOf(id)) {
-      if (!depth.has(t)) {
-        depth.set(t, (depth.get(id) ?? 0) + 1);
-        queue.push(t);
-      }
-    }
-  }
-  // Steps unreachable from start still get placed at the end.
-  stepIds.forEach((id) => {
-    if (!depth.has(id)) depth.set(id, Math.max(0, ...depth.values()) + 1);
+    return {
+      id: `step:${id}`,
+      type: "step",
+      position: { x: 0, y: 0 },
+      data: {
+        label: id,
+        kind: s?.type,
+        durationMs: durByStep.get(id) ?? null,
+        visited: visited.has(id),
+        selected: selectedStep === id,
+      },
+    };
   });
-
-  // Group by depth → rows; spread siblings across columns.
-  const byDepth = new Map<number, string[]>();
-  for (const id of stepIds) {
-    const d = depth.get(id) ?? 0;
-    (byDepth.get(d) ?? byDepth.set(d, []).get(d)!).push(id);
-  }
-
-  const nodes: Node[] = [];
-  const colGap = 240;
-  const rowGap = 130;
-  const pos = new Map<string, { x: number; y: number }>();
-  [...byDepth.keys()]
-    .sort((a, b) => a - b)
-    .forEach((d) => {
-      const ids = byDepth.get(d)!;
-      ids.forEach((id, i) => {
-        const x = 60 + (i - (ids.length - 1) / 2) * colGap;
-        const y = 30 + d * rowGap;
-        pos.set(id, { x, y });
-        const s = graphSteps[id];
-        nodes.push({
-          id: `step:${id}`,
-          type: "step",
-          position: { x, y },
-          data: {
-            label: id,
-            kind: s?.type,
-            durationMs: durByStep.get(id) ?? null,
-            visited: visited.has(id),
-            selected: selectedStep === id,
-          },
-        });
-      });
-    });
 
   // --- edges: every conditional + default, taken ones highlighted ---------
   const edges: Edge[] = [];
@@ -259,16 +276,25 @@ function buildGraph(
         id: `e:${id}->${to}:${label ?? "next"}`,
         source: `step:${id}`,
         target: `step:${to}`,
+        type: "smoothstep",
+        pathOptions: { borderRadius: 12 } as any,
         label,
+        labelShowBg: true,
         animated: isTaken,
-        markerEnd: { type: MarkerType.ArrowClosed },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: isTaken ? "rgb(166 221 31)" : "rgb(var(--border))",
+        },
         style: {
           stroke: isTaken ? "rgb(166 221 31)" : "rgb(var(--border))",
-          strokeWidth: isTaken ? 2 : 1.5,
+          strokeWidth: isTaken ? 2 : 1.25,
           strokeDasharray: isDefault && (s?.choices?.length ?? 0) > 0 ? "5 4" : undefined,
+          opacity: isTaken ? 1 : 0.7,
         },
-        labelStyle: { fill: "rgb(var(--muted))", fontSize: 11 },
-        labelBgStyle: { fill: "rgb(var(--surface))", fillOpacity: 0.85 },
+        labelStyle: { fill: "rgb(var(--muted))", fontSize: 10 },
+        labelBgStyle: { fill: "rgb(var(--surface))", fillOpacity: 0.9 },
+        labelBgPadding: [4, 2],
+        labelBgBorderRadius: 4,
       });
     };
 
@@ -280,10 +306,55 @@ function buildGraph(
     }
   }
 
+  // --- layered layout via Dagre (handles ordering + crossing minimization) -
+  const pos = layoutWithDagre(nodes, edges);
+
   // --- memory slot nodes attach to producing step -------------------------
-  attachMemory(doc, pos, nodes, edges);
+  if (opts.showMemory) attachMemory(doc, pos, nodes, edges);
 
   return { nodes, edges, hasGraph: true };
+}
+
+const STEP_W = 180;
+const STEP_H = 66;
+
+/** Position step nodes with Dagre (top-to-bottom layered DAG). Mutates each
+ *  node's `position` and returns a step-id → position map for memory layout. */
+function layoutWithDagre(
+  nodes: Node[],
+  edges: Edge[],
+): Map<string, { x: number; y: number }> {
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({
+    rankdir: "TB",
+    nodesep: 60, // horizontal gap between siblings in a rank
+    ranksep: 80, // vertical gap between ranks
+    marginx: 20,
+    marginy: 20,
+  });
+  g.setDefaultEdgeLabel(() => ({}));
+
+  for (const n of nodes) g.setNode(n.id, { width: STEP_W, height: STEP_H });
+  // Only edges between two step nodes participate in layering.
+  for (const e of edges) {
+    if (e.source.startsWith("step:") && e.target.startsWith("step:")) {
+      g.setEdge(e.source, e.target);
+    }
+  }
+
+  dagre.layout(g);
+
+  const pos = new Map<string, { x: number; y: number }>();
+  for (const n of nodes) {
+    const dn = g.node(n.id);
+    if (!dn) continue;
+    // Dagre returns node centers; ReactFlow wants top-left.
+    const x = dn.x - STEP_W / 2;
+    const y = dn.y - STEP_H / 2;
+    n.position = { x, y };
+    pos.set(n.id.replace(/^step:/, ""), { x, y });
+  }
+  return pos;
 }
 
 function condLabel(cond: string): string {
