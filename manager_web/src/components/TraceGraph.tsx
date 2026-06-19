@@ -37,7 +37,7 @@ type StepNodeData = {
   selected: boolean;
   edgeHighlighted?: boolean;
 };
-type SlotNodeData = { label: string; value: unknown; edgeHighlighted?: boolean };
+type SlotNodeData = { slots: Record<string, any>; edgeHighlighted?: boolean };
 
 function StepNode({ data }: NodeProps<StepNodeData>) {
   return (
@@ -98,28 +98,37 @@ function StepNode({ data }: NodeProps<StepNodeData>) {
 }
 
 function SlotNode({ data }: NodeProps<SlotNodeData>) {
+  const entries = Object.entries(data.slots || {});
   return (
     <div
       className={[
-        "rounded-lg px-2.5 py-1.5 w-[160px] transition-shadow",
+        "rounded-xl border p-2 flex flex-col transition-shadow shadow-sm max-h-[160px] overflow-y-auto cursor-help",
         data.edgeHighlighted
-          ? "border-2 bg-brand/10"
-          : "border border-brand/40 bg-brand/10",
+          ? "border-blue-400 bg-blue-50/90 dark:bg-blue-950/50"
+          : "border-brand/40 bg-brand/10 dark:bg-brand-950/20",
       ].join(" ")}
-      style={
-        data.edgeHighlighted
-          ? { borderColor: "rgb(96, 165, 250)", boxShadow: "0 0 0 3px rgba(96, 165, 250, 0.3)" }
-          : undefined
-      }
+      style={{
+        width: "180px",
+        borderColor: data.edgeHighlighted ? "rgb(96, 165, 250)" : undefined,
+        boxShadow: data.edgeHighlighted ? "0 0 0 3px rgba(96, 165, 250, 0.3)" : undefined,
+      }}
     >
       <Handle type="target" position={Position.Left} className="!bg-brand-500" />
-      <div className="text-[10px] uppercase tracking-wide text-brand-700 dark:text-brand-300">
-        memory
+      <div className="text-[9px] uppercase tracking-wider text-brand font-semibold mb-1">
+        Memory Snapshot
       </div>
-      <div className="font-mono text-xs text-fg truncate">{data.label}</div>
-      <div className="font-mono text-[11px] text-muted truncate">
-        {valuePreview(data.value)}
-      </div>
+      {entries.length === 0 ? (
+        <div className="text-[10px] text-muted italic font-mono">— empty —</div>
+      ) : (
+        <div className="space-y-1 font-mono text-[9px] leading-tight">
+          {entries.map(([k, v]) => (
+            <div key={k} className="truncate" title={`${k}: ${valuePreview(v)}`}>
+              <span className="text-muted mr-1">{k}:</span>
+              <span className="text-fg">{valuePreview(v)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -429,36 +438,44 @@ function buildGraph(
   }
 
   // --- memory slot nodes (added BEFORE layout so Dagre spaces them) --------
-  // Each slot is a leaf attached to the step that produced it; Dagre ranks it
-  // just below that step, guaranteeing no overlap regardless of count.
+  // Reconstruct memory state at each step from trace events and add a single circular-themed snapshot card.
   if (opts.showMemory) {
-    const producedBy = new Map<string, string>();
-    for (const e of doc.memory?.edges ?? []) {
-      if (e.from?.startsWith("step:") && e.to?.startsWith("slot:")) {
-        producedBy.set(e.to, e.from.slice("step:".length));
+    const slotsAtStep = new Map<string, Record<string, any>>();
+    {
+      let currentSlots: Record<string, any> = {};
+      if (doc.workflow?.initial_slots) {
+        currentSlots = { ...doc.workflow.initial_slots };
+      }
+      for (const ev of doc.trace as TraceEvent[]) {
+        if (ev.slots) {
+          currentSlots = { ...currentSlots, ...ev.slots };
+        }
+        if (ev.step) {
+          slotsAtStep.set(ev.step, { ...currentSlots });
+        }
       }
     }
-    for (const n of doc.memory?.nodes ?? []) {
-      if (n.kind !== "slot") continue;
-      const stepName = producedBy.get(n.id);
-      // Only attach slots whose producing step is in view.
-      if (stepName && !graphSteps[stepName]) continue;
+
+    for (const id of stepIds) {
+      if (!visited.has(id)) continue;
+      const slots = slotsAtStep.get(id);
+      if (!slots || Object.keys(slots).length === 0) continue;
+
+      const slotNodeId = `slot:${id}:memory`;
       nodes.push({
-        id: n.id,
+        id: slotNodeId,
         type: "slot",
         position: { x: 0, y: 0 },
-        data: { label: n.label ?? n.id, value: n.value },
+        data: { slots },
       });
-      if (stepName) {
-        edges.push({
-          id: `m:${stepName}->${n.id}`,
-          source: `step:${stepName}`,
-          sourceHandle: "slot",
-          target: n.id,
-          type: "smoothstep",
-          style: { stroke: "rgb(166 221 31)", strokeWidth: 1.5, strokeDasharray: "4 3" },
-        });
-      }
+      edges.push({
+        id: `m:${id}->${slotNodeId}`,
+        source: `step:${id}`,
+        sourceHandle: "slot",
+        target: slotNodeId,
+        type: "smoothstep",
+        style: { stroke: "rgb(166 221 31)", strokeWidth: 1.25, strokeDasharray: "4 3" },
+      });
     }
   }
 
@@ -468,13 +485,13 @@ function buildGraph(
   return { nodes, edges, hasGraph: true };
 }
 
-// Must match the FIXED rendered node sizes (w-[200px] / w-[160px]) so Dagre's
+// Must match the FIXED rendered node sizes (w-[200px] / w-[180px]) so Dagre's
 // collision math is accurate. Heights are generous upper bounds (tallest
 // variant: tag + label + duration + padding).
 const STEP_W = 200;
 const STEP_H = 80;
-const SLOT_W = 160;
-const SLOT_H = 60;
+const SLOT_W = 180;
+const SLOT_H = 100;
 
 /** Position all nodes with Dagre (top-to-bottom layered DAG). Steps and slot
  *  nodes are sized by type; both step→step and step→slot edges participate so
