@@ -25,22 +25,21 @@ BotCircuits ships **two skills** your agent loads:
 | Skill | The user says… | The agent does… |
 |---|---|---|
 | **botcircuits-workflow-authoring** | _"create an order fulfillment workflow with …"_ | Writes the workflow JSON and builds it. |
-| **botcircuits-workflow-running** | _"run order fulfillment"_ | Kicks off the run and relays results — it does **not** perform the steps itself. |
+| **botcircuits-workflow-running** | _"run order fulfillment"_ | Steps through the built workflow, performing each action the engine hands it. |
 
-When a workflow runs, your agent starts it with a single call and then steps
-back. The deterministic engine walks the state machine in a background process
-and dispatches each action step to **its own separate agent process** (the
-`claude-code` runtime spawns one headless `claude` per step). The engine decides
-every branch; the per-step process does the work. Control only returns to your
-session when a step needs **human feedback** — the run pauses with a question,
-you relay it to the user, and resume with their reply. On completion you relay
-the summary.
+When a workflow runs, the deterministic engine walks the state machine and hands
+each action step back to your agent **in its current session** — your agent
+performs the action with its own tools (using its own live permissions), reports
+what it observed, and the engine deterministically decides the next step. Your
+agent never picks the next step; it just does the work the engine asks for, one
+step at a time, and asks you only when a step needs your input.
 
-This **external-host** model keeps your interactive session free of the
-step-by-step grind: it only starts the run, answers human-feedback pauses, and
-reports the result. (You can also run the same workflow in-session with the
-inline _self_ runtime, or use the self-contained
-[native agent](docs/native-agent.md); see [Runtime Providers](docs/concepts/11-runtime-providers.md).)
+This **inline / self** model means no nested process and no second model — the
+agent that read the skill is the one that runs the workflow, so file and tool
+access work exactly as they do in your session. (For non-interactive hosts the
+engine can instead run headless, one process per step, via the `claude-code`
+runtime; or use the self-contained [native agent](docs/native-agent.md). See
+[Runtime Providers](docs/concepts/11-runtime-providers.md).)
 
 ---
 
@@ -92,9 +91,10 @@ claude > "run order fulfillment for order #1024"
 ```
 
 The authoring skill writes `.botcircuits/workflows/order_fulfillment.json` and
-builds it; the running skill kicks off the engine, which runs each step in its
-own agent process, pausing to ask you for input only when a step needs human
-feedback, and reporting the result at the end.
+builds it; the running skill steps the agent through it — the engine hands back
+each action, the agent performs it in-session and reports what it observed,
+asking you for input only when a step needs it, and reporting the result at the
+end.
 
 ---
 
