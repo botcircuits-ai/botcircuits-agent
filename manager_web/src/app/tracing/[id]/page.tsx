@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { RefreshButton } from "@/components/RefreshButton";
 import { RequireAuth } from "@/components/RequireAuth";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TraceGraph } from "@/components/TraceGraph";
@@ -82,12 +83,7 @@ function SessionDetail() {
             <code className="font-mono text-xs">{doc.session_id}</code>
           </div>
         </div>
-        <button
-          onClick={load}
-          className="h-9 px-3 rounded-lg border border-border text-sm text-muted hover:text-fg hover:bg-elevated"
-        >
-          Refresh
-        </button>
+        <RefreshButton onRefresh={load} />
       </div>
 
       {/* meta strip */}

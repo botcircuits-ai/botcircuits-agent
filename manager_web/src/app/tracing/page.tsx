@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { RefreshButton } from "@/components/RefreshButton";
 import { RequireAuth } from "@/components/RequireAuth";
 import { StatusBadge } from "@/components/StatusBadge";
 import { api, type SessionSummary } from "@/lib/api";
@@ -46,12 +47,7 @@ function TracingList() {
             memory flow.
           </p>
         </div>
-        <button
-          onClick={load}
-          className="h-9 px-3 rounded-lg border border-border text-sm text-muted hover:text-fg hover:bg-elevated"
-        >
-          Refresh
-        </button>
+        <RefreshButton onRefresh={load} />
       </div>
 
       {error && (
