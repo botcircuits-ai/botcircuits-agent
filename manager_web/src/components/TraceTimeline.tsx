@@ -4,8 +4,57 @@ import { useState } from "react";
 import type { TraceEvent } from "@/lib/api";
 import { cx, eventDotColor, eventLabel, fmtDuration } from "@/lib/format";
 
-/** Vertical event timeline. Each event expands to show its slot snapshot and
- *  type-specific data (action I/O, branch decision, resolved slots). */
+/**
+ * Vertical event timeline, grouped by step.
+ *
+ * The raw trace is a flat sequence (session_start, then per step: step_enter →
+ * action_before → action_after → branch, …). Here we fold each step's events
+ * into one **step block** that names the step and nests its action start/stop
+ * (and slot/branch) as sub-items, instead of listing them in the main
+ * sequence. Events outside any step (session_start / session_end / paused)
+ * remain top-level rows.
+ */
+
+type StepGroup = {
+  kind: "step";
+  step: string;
+  enter: TraceEvent;
+  children: TraceEvent[];
+};
+type Single = { kind: "single"; ev: TraceEvent };
+type Row = StepGroup | Single;
+
+// Event types that belong to the step currently in progress (nested as
+// sub-items rather than shown in the main sequence).
+const CHILD_TYPES = new Set([
+  "action_before",
+  "action_after",
+  "slot_resolve",
+  "branch",
+]);
+
+function group(events: TraceEvent[]): Row[] {
+  const rows: Row[] = [];
+  let current: StepGroup | null = null;
+  for (const ev of events) {
+    if (ev.type === "step_enter") {
+      current = { kind: "step", step: ev.step ?? "step", enter: ev, children: [] };
+      rows.push(current);
+      continue;
+    }
+    if (current && CHILD_TYPES.has(ev.type)) {
+      // action_* events carry no step id; attribute them to the open step.
+      current.children.push(ev);
+      continue;
+    }
+    // Boundary event (session_start/end, paused, anything unexpected) closes
+    // the current step grouping and stands on its own.
+    current = null;
+    rows.push({ kind: "single", ev });
+  }
+  return rows;
+}
+
 export function TraceTimeline({
   events,
   highlightStep,
@@ -13,87 +62,177 @@ export function TraceTimeline({
   events: TraceEvent[];
   highlightStep: string | null;
 }) {
+  const rows = group(events);
   return (
     <ol className="relative">
-      {events.map((ev, i) => (
-        <TimelineRow
-          key={ev.seq}
-          ev={ev}
-          last={i === events.length - 1}
-          highlight={!!highlightStep && ev.step === highlightStep}
-        />
-      ))}
+      {rows.map((row, i) => {
+        const last = i === rows.length - 1;
+        if (row.kind === "single") {
+          return <SingleRow key={row.ev.seq} ev={row.ev} last={last} />;
+        }
+        return (
+          <StepBlock
+            key={row.enter.seq}
+            group={row}
+            last={last}
+            highlight={!!highlightStep && row.step === highlightStep}
+          />
+        );
+      })}
     </ol>
   );
 }
 
-function TimelineRow({
-  ev,
+/** A standalone (non-step) event row, e.g. session start/end. */
+function SingleRow({ ev, last }: { ev: TraceEvent; last: boolean }) {
+  return (
+    <li className="relative pl-8 pb-4">
+      {!last && <Spine />}
+      <Dot type={ev.type} />
+      <EventCard ev={ev} />
+    </li>
+  );
+}
+
+/** A step block: names the step and nests its action start/stop + slot/branch. */
+function StepBlock({
+  group,
   last,
   highlight,
 }: {
-  ev: TraceEvent;
+  group: StepGroup;
   last: boolean;
   highlight: boolean;
 }) {
+  const totalMs = group.children
+    .filter((c) => c.type === "action_after")
+    .reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
+
+  return (
+    <li className="relative pl-8 pb-4">
+      {!last && <Spine />}
+      <Dot type="step_enter" />
+      <div
+        className={cx(
+          "rounded-xl border",
+          highlight ? "border-brand/50 bg-brand/5" : "border-border bg-surface",
+        )}
+      >
+        {/* Step header */}
+        <div className="px-3 py-2 flex items-center gap-2 border-b border-border">
+          <span className="text-[11px] uppercase tracking-wide text-muted">
+            Step
+          </span>
+          <span className="font-medium text-fg text-sm">{group.step}</span>
+          {totalMs > 0 && (
+            <span className="text-xs text-brand-700 dark:text-brand-300">
+              {fmtDuration(totalMs)}
+            </span>
+          )}
+          <span className="ml-auto text-xs text-muted tabular-nums">
+            #{group.enter.seq}
+          </span>
+        </div>
+
+        {/* Step's action text (from step_enter) */}
+        {actionsOf(group.enter).length > 0 && (
+          <div className="px-3 pt-2">
+            <ul className="list-disc pl-4 text-sm text-fg space-y-0.5">
+              {actionsOf(group.enter).map((a, i) => (
+                <li key={i}>{a}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Nested sub-items: action start/stop, slot resolve, branch */}
+        <ul className="px-3 py-2 space-y-1.5">
+          {group.children.map((c) => (
+            <SubItem key={c.seq} ev={c} />
+          ))}
+          {group.children.length === 0 && (
+            <li className="text-xs text-muted">No sub-events.</li>
+          )}
+        </ul>
+      </div>
+    </li>
+  );
+}
+
+/** A nested sub-event (action_before / action_after / slot_resolve / branch). */
+function SubItem({ ev }: { ev: TraceEvent }) {
   const [open, setOpen] = useState(false);
   const hasDetail =
     Object.keys(ev.data ?? {}).length > 0 ||
     Object.keys(ev.slots ?? {}).length > 0;
-
   return (
-    <li className="relative pl-8 pb-4">
-      {!last && (
-        <span className="absolute left-[7px] top-4 bottom-0 w-px bg-border" />
-      )}
-      <span
-        className={cx(
-          "absolute left-0 top-1.5 h-3.5 w-3.5 rounded-full ring-4 ring-bg",
-          eventDotColor(ev.type),
-        )}
-      />
-      <div
-        className={cx(
-          "rounded-xl border px-3 py-2",
-          highlight ? "border-brand/50 bg-brand/5" : "border-border bg-surface",
-        )}
+    <li className="rounded-lg border border-border bg-elevated/40">
+      <button
+        onClick={() => hasDetail && setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 text-left px-2.5 py-1.5"
       >
-        <button
-          onClick={() => hasDetail && setOpen((o) => !o)}
-          className="w-full flex items-center gap-2 text-left"
-        >
-          <span className="text-sm font-medium text-fg">
-            {eventLabel(ev.type)}
+        <span className={cx("h-2 w-2 rounded-full shrink-0", eventDotColor(ev.type))} />
+        <span className="text-xs font-medium text-fg">{eventLabel(ev.type)}</span>
+        {ev.duration_ms != null && (
+          <span className="text-[11px] text-brand-700 dark:text-brand-300">
+            {fmtDuration(ev.duration_ms)}
           </span>
-          {ev.step && (
-            <span className="font-mono text-xs text-muted">{ev.step}</span>
-          )}
-          {ev.duration_ms != null && (
-            <span className="text-xs text-brand-700 dark:text-brand-300">
-              {fmtDuration(ev.duration_ms)}
-            </span>
-          )}
-          <span className="ml-auto text-xs text-muted tabular-nums">
-            #{ev.seq}
-          </span>
-          {hasDetail && (
-            <span className="text-muted text-xs">{open ? "▾" : "▸"}</span>
-          )}
-        </button>
-
-        {open && (
-          <div className="mt-2 space-y-2">
-            <EventData ev={ev} />
-            {Object.keys(ev.slots ?? {}).length > 0 && (
-              <Section title="Memory at this point">
-                <KeyVals obj={ev.slots} />
-              </Section>
-            )}
-          </div>
         )}
-      </div>
+        <span className="ml-auto text-[11px] text-muted tabular-nums">
+          #{ev.seq}
+        </span>
+        {hasDetail && (
+          <span className="text-muted text-[11px]">{open ? "▾" : "▸"}</span>
+        )}
+      </button>
+      {open && (
+        <div className="px-2.5 pb-2 space-y-2">
+          <EventData ev={ev} />
+          {Object.keys(ev.slots ?? {}).length > 0 && (
+            <Section title="Memory at this point">
+              <KeyVals obj={ev.slots} />
+            </Section>
+          )}
+        </div>
+      )}
     </li>
   );
+}
+
+/** Card body for a standalone event (session start/end, paused). */
+function EventCard({ ev }: { ev: TraceEvent }) {
+  const [open, setOpen] = useState(false);
+  const hasDetail =
+    Object.keys(ev.data ?? {}).length > 0 ||
+    Object.keys(ev.slots ?? {}).length > 0;
+  return (
+    <div className="rounded-xl border border-border bg-surface px-3 py-2">
+      <button
+        onClick={() => hasDetail && setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 text-left"
+      >
+        <span className="text-sm font-medium text-fg">{eventLabel(ev.type)}</span>
+        {ev.step && <span className="font-mono text-xs text-muted">{ev.step}</span>}
+        <span className="ml-auto text-xs text-muted tabular-nums">#{ev.seq}</span>
+        {hasDetail && <span className="text-muted text-xs">{open ? "▾" : "▸"}</span>}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <EventData ev={ev} />
+          {Object.keys(ev.slots ?? {}).length > 0 && (
+            <Section title="Memory at this point">
+              <KeyVals obj={ev.slots} />
+            </Section>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function actionsOf(ev: TraceEvent): string[] {
+  const a = (ev.data as any)?.actions;
+  return Array.isArray(a) ? a : [];
 }
 
 function EventData({ ev }: { ev: TraceEvent }) {
@@ -188,5 +327,22 @@ function KeyVals({ obj }: { obj: Record<string, unknown> }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// --- shared timeline chrome --------------------------------------------------
+
+function Spine() {
+  return <span className="absolute left-[7px] top-4 bottom-0 w-px bg-border" />;
+}
+
+function Dot({ type }: { type: string }) {
+  return (
+    <span
+      className={cx(
+        "absolute left-0 top-1.5 h-3.5 w-3.5 rounded-full ring-4 ring-bg",
+        eventDotColor(type),
+      )}
+    />
   );
 }
