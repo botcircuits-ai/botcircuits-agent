@@ -43,7 +43,10 @@ function StepNode({ data }: NodeProps<StepNodeData>) {
         // Visited steps sit on the elevated surface; unvisited ("not run")
         // steps use a dashed muted border + faint fill so they stay clearly
         // readable against the canvas instead of fading into it.
-        "rounded-xl px-3 py-2 min-w-[160px] shadow-sm",
+        // FIXED width so the rendered size matches the size given to Dagre —
+        // otherwise long labels grow the node past Dagre's estimate and nodes
+        // collide.
+        "rounded-xl px-3 py-2 w-[200px] shadow-sm",
         data.selected
           ? "border-2 border-brand ring-2 ring-brand/40 bg-surface"
           : data.visited
@@ -86,7 +89,7 @@ function StepNode({ data }: NodeProps<StepNodeData>) {
 
 function SlotNode({ data }: NodeProps<SlotNodeData>) {
   return (
-    <div className="rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 min-w-[120px]">
+    <div className="rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 w-[160px]">
       <Handle type="target" position={Position.Left} className="!bg-brand-500" />
       <div className="text-[10px] uppercase tracking-wide text-brand-700 dark:text-brand-300">
         memory
@@ -157,13 +160,13 @@ export function TraceGraph({
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.2}
+        fitViewOptions={{ padding: 0.2 }}
+        minZoom={0.15}
         proOptions={{ hideAttribution: true }}
         onNodeClick={(_, node) => {
           if (node.type === "step") onSelectStep(node.data.label);
         }}
-        nodesDraggable={false}
+        nodesDraggable
         nodesConnectable={false}
       >
         <Background gap={18} size={1} className="!text-border" color="currentColor" />
@@ -370,10 +373,13 @@ function buildGraph(
   return { nodes, edges, hasGraph: true };
 }
 
-const STEP_W = 180;
-const STEP_H = 66;
-const SLOT_W = 150;
-const SLOT_H = 50;
+// Must match the FIXED rendered node sizes (w-[200px] / w-[160px]) so Dagre's
+// collision math is accurate. Heights are generous upper bounds (tallest
+// variant: tag + label + duration + padding).
+const STEP_W = 200;
+const STEP_H = 80;
+const SLOT_W = 160;
+const SLOT_H = 60;
 
 /** Position all nodes with Dagre (top-to-bottom layered DAG). Steps and slot
  *  nodes are sized by type; both step→step and step→slot edges participate so
@@ -382,10 +388,11 @@ function layoutWithDagre(nodes: Node[], edges: Edge[]): void {
   const g = new dagre.graphlib.Graph();
   g.setGraph({
     rankdir: "TB",
-    nodesep: 45, // horizontal gap between siblings in a rank
-    ranksep: 70, // vertical gap between ranks
-    marginx: 24,
-    marginy: 24,
+    nodesep: 90, // horizontal gap between siblings — wide so labels/edges breathe
+    ranksep: 130, // vertical gap between ranks — room for edge labels between rows
+    edgesep: 30, // gap between parallel edges
+    marginx: 30,
+    marginy: 30,
   });
   g.setDefaultEdgeLabel(() => ({}));
 
