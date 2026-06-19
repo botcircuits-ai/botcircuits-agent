@@ -121,3 +121,67 @@ def test_non_json_slot_values_are_stringified(sessions_env):
 
 def test_new_session_id_unique():
     assert new_session_id() != new_session_id()
+
+
+def test_flow_graph_snapshot_captures_branch_topology(sessions_env):
+    # A flow with a branching agentAction (conditions at step root) like the
+    # built order_fulfillment workflow.
+    flow = {
+        "start": "start",
+        "steps": {
+            "start": {"type": "start", "next": "check_stock"},
+            "check_stock": {
+                "type": "agentAction",
+                "settings": {"action": "Check stock."},
+                "next": "backorder",
+                "conditions": [
+                    {"condition": "all items are in stock", "next": "ship"}
+                ],
+                "choices": [{"next": "ship", "expCondition": "in_stock is true"}],
+            },
+            "ship": {"type": "agentAction", "settings": {"action": "Ship."}},
+            "backorder": {"type": "agentAction", "settings": {"action": "Backorder."}},
+        },
+    }
+    t = SessionTrace.start(
+        workflow_name="order_fulfillment",
+        runtime="claude-code",
+        initial_slots={},
+        flow=flow,
+    )
+    doc = json.loads(SessionTrace.path_for(t.session_id).read_text())
+    g = doc["workflow"]["graph"]
+    assert g["start"] == "start"
+    cs = g["steps"]["check_stock"]
+    # Default ("otherwise") path:
+    assert cs["next"] == "backorder"
+    # Conditional path with its authored NL condition:
+    assert cs["choices"] == [{"condition": "all items are in stock", "next": "ship"}]
+    # Both branch targets exist as steps so the graph can draw them.
+    assert {"ship", "backorder"} <= set(g["steps"])
+
+
+def test_flow_graph_falls_back_to_choices_when_no_conditions(sessions_env):
+    flow = {
+        "start": "a",
+        "steps": {
+            "a": {
+                "type": "agentAction",
+                "settings": {"action": "do"},
+                "next": "c",
+                "choices": [{"next": "b", "expCondition": "x is 1"}],
+            },
+            "b": {"type": "agentAction"},
+            "c": {"type": "agentAction"},
+        },
+    }
+    t = SessionTrace.start(workflow_name="wf", runtime="self", initial_slots={}, flow=flow)
+    doc = json.loads(SessionTrace.path_for(t.session_id).read_text())
+    a = doc["workflow"]["graph"]["steps"]["a"]
+    assert a["choices"] == [{"condition": "x is 1", "next": "b"}]
+
+
+def test_flow_graph_empty_without_flow(sessions_env):
+    t = SessionTrace.start(workflow_name="wf", runtime="self", initial_slots={})
+    doc = json.loads(SessionTrace.path_for(t.session_id).read_text())
+    assert doc["workflow"]["graph"] == {}

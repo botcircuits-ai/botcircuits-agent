@@ -88,10 +88,12 @@ def _open_trace(
     runtime: str,
     initial_slots: dict[str, Any],
     saved_session_id: str | None,
+    flow: dict | None = None,
 ) -> SessionTrace | None:
     """Open the session trace for this run. On resume (a saved session_id),
     reopen the same file so events append into one timeline; otherwise start a
-    fresh session. Best-effort — a tracing failure never blocks the run."""
+    fresh session (snapshotting the workflow graph for the trace view).
+    Best-effort — a tracing failure never blocks the run."""
     try:
         if saved_session_id:
             existing = SessionTrace.load(saved_session_id)
@@ -102,6 +104,7 @@ def _open_trace(
             runtime=runtime,
             initial_slots=initial_slots,
             session_id=saved_session_id or new_session_id(),
+            flow=flow,
         )
     except Exception:  # pragma: no cover - tracing must not break a run
         return None
@@ -210,6 +213,7 @@ async def _run(
         runtime=resolved_name,
         initial_slots=slots,
         saved_session_id=saved.get("session_id"),
+        flow=flow,
     )
     sink = _trace_sink(trace)
     run_provider = traced_provider(provider, trace)

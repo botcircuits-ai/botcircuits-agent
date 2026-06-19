@@ -48,6 +48,18 @@ export type MemoryEdge = {
   [k: string]: unknown;
 };
 
+export type FlowChoice = { condition: string; next: string };
+export type FlowStep = {
+  type?: string;
+  action?: string;
+  next?: string | null;
+  choices?: FlowChoice[];
+};
+export type FlowGraph = {
+  start?: string | null;
+  steps?: Record<string, FlowStep>;
+};
+
 export type SessionDoc = {
   session_id: string;
   agent: { runtime?: string };
@@ -56,6 +68,7 @@ export type SessionDoc = {
     start?: string;
     end?: string | null;
     initial_slots?: Record<string, unknown>;
+    graph?: FlowGraph;
   };
   trace: TraceEvent[];
   memory: { nodes: MemoryNode[]; edges: MemoryEdge[] };

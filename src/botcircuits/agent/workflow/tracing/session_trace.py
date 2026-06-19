@@ -81,6 +81,69 @@ def _public_slots(slots: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _flow_graph(flow: dict[str, Any] | None) -> dict[str, Any]:
+    """A compact branch topology for the trace view.
+
+    Shape::
+
+        {"start": "<step id>",
+         "steps": {
+            "<id>": {
+              "type": "agentAction|question|start|...",
+              "action": "<slot-free action text>",
+              "next": "<default/otherwise next id or null>",
+              "choices": [{"condition": "<NL test>", "next": "<id>"}, ...]
+            }, ...
+         }}
+
+    Reads the human-readable `conditions` (the authored NL test) when present,
+    falling back to the compiled `choices[].next` so we always know the targets
+    even on a workflow built without conditions echoed back.
+    """
+    if not isinstance(flow, dict):
+        return {}
+    steps_in = flow.get("steps") or {}
+    if not isinstance(steps_in, dict):
+        return {}
+
+    steps_out: dict[str, Any] = {}
+    for sid, step in steps_in.items():
+        if not isinstance(step, dict):
+            continue
+        action = ""
+        settings = step.get("settings")
+        if isinstance(settings, dict):
+            action = str(settings.get("action") or "")
+
+        # Prefer authored `conditions` (carry the NL test); else derive labels
+        # from compiled `choices` so the edges still have targets.
+        choices_out: list[dict[str, Any]] = []
+        conditions = step.get("conditions")
+        if isinstance(conditions, list) and conditions:
+            for c in conditions:
+                if isinstance(c, dict) and c.get("next"):
+                    choices_out.append({
+                        "condition": str(c.get("condition") or ""),
+                        "next": c.get("next"),
+                    })
+        else:
+            for c in step.get("choices") or []:
+                if isinstance(c, dict) and c.get("next"):
+                    choices_out.append({
+                        "condition": str(c.get("expCondition") or ""),
+                        "next": c.get("next"),
+                    })
+
+        steps_out[sid] = {
+            "type": step.get("type"),
+            "action": action,
+            "next": step.get("next"),
+            "choices": choices_out,
+        }
+
+    return {"start": flow.get("start"), "steps": steps_out}
+
+
 class SessionTrace:
     """Writer for one session's trace file.
 
@@ -116,8 +179,16 @@ class SessionTrace:
         runtime: str,
         initial_slots: dict[str, Any] | None,
         session_id: str | None = None,
+        flow: dict[str, Any] | None = None,
     ) -> "SessionTrace":
-        """Begin a new session and emit ``session_start``."""
+        """Begin a new session and emit ``session_start``.
+
+        `flow` is the built workflow's flow dict; we snapshot its branch
+        topology (steps, their conditions → next, default next) into
+        ``workflow.graph`` so the trace view can draw the FULL workflow —
+        including conditional paths that this run did not take — and overlay
+        the path the trace actually walked.
+        """
         sid = session_id or new_session_id()
         doc = {
             "session_id": sid,
@@ -127,6 +198,7 @@ class SessionTrace:
                 "start": _now_iso(),
                 "end": None,
                 "initial_slots": _public_slots(initial_slots),
+                "graph": _flow_graph(flow),
             },
             "trace": [],
             "memory": {"nodes": [], "edges": []},
