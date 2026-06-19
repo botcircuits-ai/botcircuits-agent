@@ -96,7 +96,7 @@ function SessionDetail() {
         <Meta label="Ended" value={fmtTime(doc.workflow.end)} />
         <Meta label="Events" value={String(doc.trace.length)} />
         <Meta
-          label="Initial slots"
+          label="Initial memory"
           value={String(Object.keys(doc.workflow.initial_slots ?? {}).length)}
         />
       </div>
@@ -113,7 +113,7 @@ function SessionDetail() {
             onSelectStep={setSelectedStep}
           />
           <p className="text-xs text-muted mt-2">
-            Steps run top-to-bottom; dashed lime edges show slots each step
+            Steps run top-to-bottom; dashed lime edges show memory each step
             produced (the memory flow). Click a step to highlight it in the
             timeline.
           </p>

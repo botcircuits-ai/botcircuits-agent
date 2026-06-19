@@ -76,7 +76,7 @@ function SlotNode({ data }: NodeProps<SlotNodeData>) {
     <div className="rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 min-w-[120px]">
       <Handle type="target" position={Position.Left} className="!bg-brand-500" />
       <div className="text-[10px] uppercase tracking-wide text-brand-700 dark:text-brand-300">
-        slot
+        memory
       </div>
       <div className="font-mono text-xs text-fg truncate">{data.label}</div>
       <div className="font-mono text-[11px] text-muted truncate">

@@ -85,7 +85,7 @@ function TimelineRow({
           <div className="mt-2 space-y-2">
             <EventData ev={ev} />
             {Object.keys(ev.slots ?? {}).length > 0 && (
-              <Section title="Slots at this point">
+              <Section title="Memory at this point">
                 <KeyVals obj={ev.slots} />
               </Section>
             )}
@@ -143,7 +143,7 @@ function EventData({ ev }: { ev: TraceEvent }) {
   }
   if (ev.type === "slot_resolve") {
     return (
-      <Section title="Resolved slots">
+      <Section title="Resolved memory">
         <KeyVals obj={(d as any).resolved ?? {}} />
       </Section>
     );

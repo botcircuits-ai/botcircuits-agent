@@ -43,7 +43,7 @@ export function eventLabel(type: string): string {
       step_enter: "Step",
       action_before: "Action ▸ start",
       action_after: "Action ▸ done",
-      slot_resolve: "Slot resolve",
+      slot_resolve: "Memory resolve",
       branch: "Branch",
       paused: "Paused",
       session_end: "Session end",
