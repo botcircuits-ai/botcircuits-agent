@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { RefreshButton } from "@/components/RefreshButton";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -19,6 +20,7 @@ export default function TracingPage() {
 
 function TracingList() {
   const { token, signOut } = useAuth();
+  const router = useRouter();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,6 +90,7 @@ function TracingList() {
               {sessions.map((s) => (
                 <tr
                   key={s.session_id}
+                  onClick={() => router.push(`/tracing/${s.session_id}`)}
                   className="border-t border-border hover:bg-elevated/50 cursor-pointer"
                 >
                   <Td>
