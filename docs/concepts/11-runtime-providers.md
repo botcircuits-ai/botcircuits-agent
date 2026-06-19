@@ -41,17 +41,14 @@ follows is simply "print this JSON shape as your final output." This stage
 targets Linux/POSIX command interfaces; the OS-specific bits live in one place
 (`runtime/cli_exec.py`) so other platforms drop in later.
 
-## Isolation and state (CLI providers)
+## Isolation and state
 
-This applies to the CLI providers (`claude-code`, …), not the default `self`
-mode. By default each CLI segment runs in the **main agent's working
-directory**, so the spawned CLI inherits that project's `.claude/settings.json`
-permission rules; set `runtimes.<name>.cwd` to `null` to instead use a fresh
-temporary working directory (an isolated session context, torn down after).
-Continuity within a segment is the CLI call; continuity *across* segments is the
-engine's slot state, by design (cache-stable, deterministic). When a step needs
-the user, the provider returns `{"paused": true, "question": …}`; the runner
-persists a resume cursor and continues on the next invocation.
+Each action segment runs the host CLI in a **fresh temporary working
+directory** — an isolated session context, torn down after. Continuity within
+a segment is the CLI call; continuity *across* segments is the engine's slot
+state, by design (cache-stable, deterministic). When a step needs the user, the
+provider returns `{"paused": true, "question": …}`; the runner persists a resume
+cursor and continues on the next invocation.
 
 ## Inline / self mode (the common case)
 

@@ -89,10 +89,9 @@ def add_workflow_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     run_p = wf_subs.add_parser(
         "run",
-        help="Run a built workflow: the deterministic engine navigates and "
-             "hands each action step to the HOST agent to perform in-session "
-             "(inline/self runtime). Step with --restart / --observed / "
-             "--reply; or pass --runtime claude-code for headless hosts.",
+        help="Run a built workflow: drive the deterministic engine, "
+             "dispatching each action step to the selected agent runtime. "
+             "Pauses for human feedback; resume with --reply.",
     )
     run_p.add_argument(
         "--name", dest="workflow_name", default=None,
@@ -105,28 +104,15 @@ def add_workflow_subparser(subparsers: argparse._SubParsersAction) -> None:
     run_p.add_argument(
         "--initial-args", dest="initial_args", default="",
         help="JSON object of initial slot values to seed the run "
-             "(e.g. '{\"order_id\": \"1024\"}'). Used on --restart.",
-    )
-    run_p.add_argument(
-        "--restart", dest="restart", action="store_true",
-        help="Start (or restart) the run, discarding any saved run state. "
-             "Prints the first action / question / outcome.",
-    )
-    run_p.add_argument(
-        "--observed", dest="observed", default="",
-        help="Inline runtime only: JSON {\"slots\": {...}, \"items\": [...]} the "
-             "host observed after performing the prior `action` step. Advances "
-             "the engine to the next step.",
+             "(e.g. '{\"order_id\": \"1024\"}').",
     )
     run_p.add_argument(
         "--runtime", dest="runtime_name", default=None,
-        help="Runtime for action execution. Default: self (host performs each "
-             "step in-session). Pass claude-code/codex/… to run headless, one "
-             "process per step.",
+        help="Force a runtime (claude-code, codex, …). Default: auto-detect.",
     )
     run_p.add_argument(
         "--reply", dest="reply", default=None,
-        help="User's answer to a prior `question`; resumes the run.",
+        help="User's answer to a prior human-feedback pause; resumes the run.",
     )
 
     gen_p = wf_subs.add_parser(
@@ -321,96 +307,61 @@ def _make_dry_run(samples: list, base_dir):
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    """`workflow run` — run a built workflow.
+    """Run a built workflow through the deterministic engine + agent runtime.
 
-    The deterministic engine owns navigation; the only choice here is WHO
-    performs each action step.
+    Thin CLI wrapper over `botcircuits.runtime.run_workflow._run` so the
+    workflow-running skill can call one clean verb
+    (`botcircuits workflow run --name <wf>`). The engine navigates the state
+    machine and dispatches each step to the agent runtime; this command just
+    starts it and prints the OUTCOME the calling agent reads:
 
-    Default (inline / self runtime): the HOST agent performs each step in its
-    own session, so file/tool access uses the host's live permissions. This is
-    a stepping protocol the host loops over:
+      {"status": "success", "message": "<summary>"}   — workflow completed
+      {"status": "failure", "message": "<reason>"}    — workflow could not run
+      {"status": "paused",  "question": "<ask user>"} — needs human feedback
 
-      {"status": "action",   "actions": [...], "report": {...}}  — perform now,
-          then re-invoke with --observed matching `report`.
-      {"status": "question", "question": "..."}                 — ask the user,
-          then re-invoke with --reply "<answer>".
-      {"status": "success",  "message": "<summary>"}            — completed.
-      {"status": "failure",  "message": "<reason>"}             — terminal; the
-          caller surfaces it and does NOT retry.
-
-    Opt-in (`--runtime claude-code` / codex / …): the engine runs to completion
-    headless, one subprocess per step, returning only `success` / `failure` /
-    `paused` (for human feedback). For non-interactive hosts (cron, gateway).
+    `paused` is the only non-terminal outcome: the engine reached a step that
+    needs the user. The caller relays the question and resumes with --reply.
+    A `failure` is terminal — the caller surfaces it and does NOT retry.
     """
+    from botcircuits.runtime.run_workflow import _run
     from botcircuits.agent.workflow.local import LocalWorkflowError
 
     def _fail(message: str, code: int) -> int:
         print(json.dumps({"status": "failure", "message": message}))
         return code
 
-    def _parse_json_obj(raw: str, flag: str) -> dict | None:
-        raw = (raw or "").strip()
-        if not raw:
-            return None
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"{flag} not valid JSON: {e}")
-        if not isinstance(parsed, dict):
-            raise ValueError(f"{flag} must be a JSON object")
-        return parsed
-
     workflow_name = args.workflow_name or args.workflow_name_pos
     if not workflow_name:
         return _fail("`run` requires --name=<workflow name>", 2)
 
-    try:
-        initial_args = _parse_json_obj(args.initial_args, "--initial-args") or {}
-        observed = _parse_json_obj(getattr(args, "observed", ""), "--observed")
-    except ValueError as e:
-        return _fail(str(e), 2)
+    initial_args: dict = {}
+    raw = (args.initial_args or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            return _fail(f"--initial-args not valid JSON: {e}", 2)
+        if not isinstance(parsed, dict):
+            return _fail("--initial-args must be a JSON object", 2)
+        initial_args = parsed
 
-    runtime_name = (args.runtime_name or "").strip().lower()
-    use_inline = runtime_name in ("", "self")
-
     try:
-        if use_inline:
-            # Host performs each step in-session via the inline step driver.
-            from botcircuits.runtime.step_workflow import _step
-            result = asyncio.run(_step(
-                workflow_name,
-                initial_args=initial_args,
-                observed=observed,
-                reply=args.reply,
-                restart=bool(getattr(args, "restart", False)),
-            ))
-        else:
-            # Headless, one subprocess per step (run-to-completion).
-            from botcircuits.runtime.run_workflow import _run
-            result = asyncio.run(_run(
-                workflow_name,
-                initial_args=initial_args,
-                runtime_name=runtime_name,
-                reply=args.reply,
-            ))
+        result = asyncio.run(_run(
+            workflow_name,
+            initial_args=initial_args,
+            runtime_name=args.runtime_name,
+            reply=args.reply,
+        ))
     except LocalWorkflowError as e:
         return _fail(str(e), 1)
     except Exception as e:  # pragma: no cover - defensive top-level guard
         return _fail(f"{type(e).__name__}: {e}", 1)
 
-    # Normalize both runtimes to the caller-facing outcome contract.
+    # Map the engine's internal result to the caller-facing outcome contract.
     status = result.get("status")
-    if status == "action":
-        print(json.dumps({
-            "status": "action",
-            "actions": result.get("actions") or [],
-            "report": result.get("report") or {"slots": [], "items": []},
-            "system_notes": result.get("system_notes") or [],
-        }, ensure_ascii=False))
-        return 0
-    if status in ("question", "paused"):
+    if status == "paused":
         print(json.dumps(
-            {"status": "question", "question": result.get("question") or ""},
+            {"status": "paused", "question": result.get("question") or ""},
             ensure_ascii=False))
         return 0
     if status == "done":

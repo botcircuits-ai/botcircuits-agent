@@ -83,22 +83,19 @@ subprocess is ever spawned.
 
 ## Running
 
-Inline / self — the default (host agent performs each step in-session; the
-botcircuits-workflow-running skill drives this). `botcircuits workflow run`
-wraps `runtime.step_workflow`:
+Inline (host agent performs each step in-session — the botcircuits-workflow-running skill):
 
 ```bash
-botcircuits workflow run --name <wf> --restart [--initial-args '{…}']
-botcircuits workflow run --name <wf> --observed '{"slots":{…},"items":[…]}'
-botcircuits workflow run --name <wf> --reply "<answer>"
+python -m botcircuits.runtime.step_workflow --name <wf> --restart [--initial-args '{…}']
+python -m botcircuits.runtime.step_workflow --name <wf> --observed '{"slots":{…}}'
+python -m botcircuits.runtime.step_workflow --name <wf> --reply "<answer>"
 ```
 
-Cross-agent / headless (opt-in, one CLI subprocess per segment, run to
-completion). The same verb with `--runtime`, wrapping `runtime.run_workflow`:
+Cross-agent / headless (one CLI subprocess per segment):
 
 ```bash
-botcircuits workflow run --name <wf> --runtime claude-code \
-    [--initial-args '{"k":"v"}'] [--reply "<answer>"]
+python -m botcircuits.runtime.run_workflow --name <wf> \
+    [--initial-args '{"k":"v"}'] [--runtime claude-code] [--reply "<answer>"]
 ```
 
 Both persist a cursor to `.botcircuits/workflows/.runs/<name>.json` (gitignored)
