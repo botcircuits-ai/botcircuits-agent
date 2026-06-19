@@ -79,11 +79,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 p-3 space-y-1">
-          {!collapsed && (
-            <p className="px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted">
-              Platform
-            </p>
-          )}
+          <div
+            className={cx(
+              "flex items-center py-2",
+              collapsed ? "justify-center px-0" : "px-3",
+            )}
+          >
+            {!collapsed && (
+              <p className="flex-1 text-xs font-medium uppercase tracking-wider text-muted">
+                Platform
+              </p>
+            )}
+            <button
+              onClick={toggleCollapsed}
+              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              className="inline-flex items-center justify-center rounded-lg p-1 text-muted hover:text-fg hover:bg-elevated"
+            >
+              <SidebarIcon className="w-[18px] h-[18px]" />
+            </button>
+          </div>
           {NAV.map((item) => {
             const active = pathname.startsWith(item.href);
             const content = (
@@ -119,26 +134,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* Collapse toggle */}
-        <div className="p-3 border-t border-border">
-          <button
-            onClick={toggleCollapsed}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className={cx(
-              "flex items-center rounded-lg text-muted hover:text-fg hover:bg-elevated w-full",
-              collapsed ? "justify-center py-2.5" : "gap-2 px-3 py-2 text-sm",
-            )}
-          >
-            <SidebarIcon className="w-[18px] h-[18px]" />
-            {!collapsed && <span>Collapse</span>}
-          </button>
-          {!collapsed && (
-            <div className="px-1 pt-2 text-xs text-muted">
+        {!collapsed && (
+          <div className="p-3 border-t border-border">
+            <div className="px-1 text-xs text-muted">
               BotCircuits Manager · v0.1
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </aside>
 
       {/* Main column */}
@@ -176,7 +178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </button>
         </header>
 
-        <main className="flex-1 min-w-0 p-6 max-w-[100rem] w-full mx-auto">
+        <main className="flex-1 min-w-0 py-6 px-10 max-w-[100rem] w-full mx-auto">
           {children}
         </main>
       </div>
