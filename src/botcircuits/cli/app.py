@@ -50,6 +50,7 @@ from botcircuits.providers.base import LLMProvider
 from botcircuits.cli.ansi import C, out
 from botcircuits.cli.commands import CLIState, handle_slash
 from botcircuits.cli.commands_mcp import add_mcp_subparser, run_mcp_command
+from botcircuits.cli.commands_manager import add_manager_subparser, run_manager_command
 from botcircuits.cli.commands_workflow import add_workflow_subparser, run_workflow_command
 from botcircuits.cli.config import CLIConfig, ConfigError, resolve
 from botcircuits.cli.render import run_blocking, run_streaming
@@ -120,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="subcommand")
     add_mcp_subparser(sub)
     add_workflow_subparser(sub)
+    add_manager_subparser(sub)
     add_setup_subparser(sub)
     return p
 
@@ -353,6 +355,8 @@ def main() -> None:
             rc = run_mcp_command(args)
         elif args.subcommand == "workflow":
             rc = run_workflow_command(args)
+        elif args.subcommand == "manager":
+            rc = run_manager_command(args)
         elif args.subcommand == "setup":
             rc = run_setup_wizard(args)
         else:

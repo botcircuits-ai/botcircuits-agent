@@ -5,6 +5,7 @@
   "description": "BotCircuits Manager — web UI for workflow execution tracing and (future) workflow management.",
   "scripts": {
     "dev": "next dev -p 3700",
+    "dev:port": "next dev",
     "build": "next build",
     "start": "next start -p 3700",
     "lint": "next lint"
