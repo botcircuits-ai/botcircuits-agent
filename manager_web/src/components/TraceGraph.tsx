@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import dagre from "@dagrejs/dagre";
 import ReactFlow, {
   Background,
@@ -9,8 +9,10 @@ import ReactFlow, {
   MarkerType,
   MiniMap,
   Position,
+  applyNodeChanges,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
 } from "reactflow";
 import "reactflow/dist/style.css";
@@ -33,8 +35,9 @@ type StepNodeData = {
   durationMs: number | null;
   visited: boolean;
   selected: boolean;
+  edgeHighlighted?: boolean;
 };
-type SlotNodeData = { label: string; value: unknown };
+type SlotNodeData = { label: string; value: unknown; edgeHighlighted?: boolean };
 
 function StepNode({ data }: NodeProps<StepNodeData>) {
   return (
@@ -46,13 +49,20 @@ function StepNode({ data }: NodeProps<StepNodeData>) {
         // FIXED width so the rendered size matches the size given to Dagre —
         // otherwise long labels grow the node past Dagre's estimate and nodes
         // collide.
-        "rounded-xl px-3 py-2 w-[200px] shadow-sm",
-        data.selected
-          ? "border-2 border-brand ring-2 ring-brand/40 bg-surface"
-          : data.visited
-            ? "border border-border bg-surface"
-            : "border border-dashed border-muted/60 bg-elevated/40",
+        "rounded-xl px-3 py-2 w-[200px] shadow-sm transition-shadow",
+        data.edgeHighlighted
+          ? "border-2 bg-surface"
+          : data.selected
+            ? "border-2 border-brand ring-2 ring-brand/40 bg-surface"
+            : data.visited
+              ? "border border-border bg-surface"
+              : "border border-dashed border-muted/60 bg-elevated/40",
       ].join(" ")}
+      style={
+        data.edgeHighlighted
+          ? { borderColor: "rgb(96, 165, 250)", boxShadow: "0 0 0 3px rgba(96, 165, 250, 0.3)" }
+          : undefined
+      }
     >
       <Handle type="target" position={Position.Top} className="!bg-muted" />
       <div className="flex items-center gap-1.5">
@@ -89,7 +99,19 @@ function StepNode({ data }: NodeProps<StepNodeData>) {
 
 function SlotNode({ data }: NodeProps<SlotNodeData>) {
   return (
-    <div className="rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 w-[160px]">
+    <div
+      className={[
+        "rounded-lg px-2.5 py-1.5 w-[160px] transition-shadow",
+        data.edgeHighlighted
+          ? "border-2 bg-brand/10"
+          : "border border-brand/40 bg-brand/10",
+      ].join(" ")}
+      style={
+        data.edgeHighlighted
+          ? { borderColor: "rgb(96, 165, 250)", boxShadow: "0 0 0 3px rgba(96, 165, 250, 0.3)" }
+          : undefined
+      }
+    >
       <Handle type="target" position={Position.Left} className="!bg-brand-500" />
       <div className="text-[10px] uppercase tracking-wide text-brand-700 dark:text-brand-300">
         memory
@@ -125,14 +147,73 @@ export function TraceGraph({
 }) {
   const [onlyVisited, setOnlyVisited] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const slotCount = (doc.memory?.nodes ?? []).filter((n) => n.kind === "slot").length;
 
-  const { nodes, edges, hasGraph } = useMemo(
+  const { nodes: baseNodes, edges, hasGraph } = useMemo(
     // "Only path taken" collapses to the steps that ran; "View memory" overlays
     // the slot (memory) nodes each step produced.
     () => buildGraph(doc, selectedStep, { showMemory, onlyVisited }),
     [doc, selectedStep, showMemory, onlyVisited],
   );
+
+  // --- Controlled node state for drag support ------------------------------
+  // `baseNodes` holds the Dagre-computed positions; `currentNodes` holds the
+  // live positions that update when the user drags. Synced back whenever the
+  // base graph changes (toggle, new data, etc.).
+  const [currentNodes, setCurrentNodes] = useState<Node[]>(baseNodes);
+  const [hasDragged, setHasDragged] = useState(false);
+
+  useEffect(() => {
+    setCurrentNodes(baseNodes);
+    setHasDragged(false);
+  }, [baseNodes]);
+
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    setCurrentNodes((nds) => applyNodeChanges(changes, nds));
+    if (changes.some((c) => c.type === "position" && c.dragging)) {
+      setHasDragged(true);
+    }
+  }, []);
+
+  const handleResetLayout = useCallback(() => {
+    setCurrentNodes(baseNodes);
+    setHasDragged(false);
+  }, [baseNodes]);
+
+  // Derive display nodes/edges with edge-selection highlighting applied.
+  // Kept separate from the layout memo so clicking an edge doesn't recompute
+  // the Dagre layout.
+  const EDGE_HL = "rgb(96, 165, 250)";
+  const { displayNodes, displayEdges } = useMemo(() => {
+    if (!selectedEdgeId) return { displayNodes: currentNodes, displayEdges: edges };
+    const selEdge = edges.find((e) => e.id === selectedEdgeId);
+    if (!selEdge) return { displayNodes: currentNodes, displayEdges: edges };
+
+    const hlIds = new Set([selEdge.source, selEdge.target]);
+
+    const displayNodes = currentNodes.map((n) =>
+      hlIds.has(n.id)
+        ? { ...n, data: { ...n.data, edgeHighlighted: true } }
+        : n,
+    );
+    const displayEdges = edges.map((e) =>
+      e.id === selectedEdgeId
+        ? {
+            ...e,
+            animated: true,
+            style: { ...e.style, stroke: EDGE_HL, strokeWidth: 2.5, opacity: 1 },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              ...(typeof e.markerEnd === "object" ? e.markerEnd : {}),
+              color: EDGE_HL,
+            },
+            labelStyle: { ...(e.labelStyle ?? {}), fill: EDGE_HL, fontWeight: 600 },
+          }
+        : e,
+    );
+    return { displayNodes, displayEdges };
+  }, [currentNodes, edges, selectedEdgeId]);
 
   return (
     <div className="h-[600px] rounded-2xl border border-border bg-bg overflow-hidden relative">
@@ -153,19 +234,33 @@ export function TraceGraph({
             View memory{showMemory ? "" : ` (${slotCount})`}
           </Toggle>
         )}
+        {hasDragged && (
+          <button
+            onClick={handleResetLayout}
+            className="text-[11px] rounded-md px-2 py-1 border bg-surface/90 border-border text-muted hover:text-fg flex items-center gap-1"
+          >
+            <span className="text-xs">&#x21bb;</span> Reset layout
+          </button>
+        )}
       </div>
 
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={displayNodes}
+        edges={displayEdges}
         nodeTypes={nodeTypes}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         minZoom={0.15}
         proOptions={{ hideAttribution: true }}
         onNodeClick={(_, node) => {
+          setSelectedEdgeId(null);
           if (node.type === "step") onSelectStep(node.data.label);
         }}
+        onEdgeClick={(_, edge) =>
+          setSelectedEdgeId((prev) => (prev === edge.id ? null : edge.id))
+        }
+        onPaneClick={() => setSelectedEdgeId(null)}
+        onNodesChange={handleNodesChange}
         nodesDraggable
         nodesConnectable={false}
       >
