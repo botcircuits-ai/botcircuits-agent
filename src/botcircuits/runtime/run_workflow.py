@@ -153,11 +153,17 @@ def _record_memory_graph(
     slots it produced. Best-effort."""
     try:
         produced: dict[str, str | None] = {}
+        # `action_after` events carry no step id (the action ran inside the
+        # provider, not at a step boundary), so attribute their captured slots
+        # to the most recent `step_enter` — the step in progress at that point.
+        current_step: str | None = None
         for ev in trace._doc.get("trace", []):  # noqa: SLF001 - same package
-            if ev.get("type") == "action_after":
+            if ev.get("type") == "step_enter" and ev.get("step"):
+                current_step = ev.get("step")
+            elif ev.get("type") == "action_after":
                 out = (ev.get("data") or {}).get("output") or {}
                 for k in (out.get("captured_slots") or {}):
-                    produced[k] = ev.get("step")
+                    produced[k] = ev.get("step") or current_step
         for k, v in (slots or {}).items():
             if isinstance(k, str) and k.startswith("__"):
                 continue

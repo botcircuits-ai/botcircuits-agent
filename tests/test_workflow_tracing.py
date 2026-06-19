@@ -185,3 +185,29 @@ def test_flow_graph_empty_without_flow(sessions_env):
     t = SessionTrace.start(workflow_name="wf", runtime="self", initial_slots={})
     doc = json.loads(SessionTrace.path_for(t.session_id).read_text())
     assert doc["workflow"]["graph"] == {}
+
+
+def test_memory_graph_attributes_slots_to_current_step(sessions_env):
+    """`action_after` events carry no step id, so produced slots must be
+    attributed to the most recent `step_enter` — otherwise the memory graph
+    has no edges and slot nodes float disconnected in the trace view."""
+    from botcircuits.runtime.run_workflow import _record_memory_graph
+
+    t = SessionTrace.start(workflow_name="wf", runtime="claude-code", initial_slots={})
+    t.event(EventType.STEP_ENTER, step="check_stock")
+    t.event(
+        EventType.ACTION_AFTER,  # note: step is None, as in real runs
+        data={"output": {"captured_slots": {"in_stock": True}}},
+    )
+    t.event(EventType.STEP_ENTER, step="ship")
+    t.event(
+        EventType.ACTION_AFTER,
+        data={"output": {"captured_slots": {"shipped": True}}},
+    )
+
+    _record_memory_graph(t, {}, {"in_stock": True, "shipped": True})
+
+    doc = json.loads(SessionTrace.path_for(t.session_id).read_text())
+    edges = {(e["from"], e["to"]) for e in doc["memory"]["edges"]}
+    assert ("step:check_stock", "slot:in_stock") in edges
+    assert ("step:ship", "slot:shipped") in edges

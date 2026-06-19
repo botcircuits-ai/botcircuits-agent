@@ -37,22 +37,27 @@ type StepNodeData = {
 type SlotNodeData = { label: string; value: unknown };
 
 function StepNode({ data }: NodeProps<StepNodeData>) {
-  const dim = !data.visited;
   return (
     <div
       className={[
-        "rounded-xl border px-3 py-2 min-w-[160px] bg-surface shadow-sm",
+        // Visited steps sit on the elevated surface; unvisited ("not run")
+        // steps use a dashed muted border + faint fill so they stay clearly
+        // readable against the canvas instead of fading into it.
+        "rounded-xl px-3 py-2 min-w-[160px] shadow-sm",
         data.selected
-          ? "border-brand ring-2 ring-brand/40"
+          ? "border-2 border-brand ring-2 ring-brand/40 bg-surface"
           : data.visited
-            ? "border-border"
-            : "border-dashed border-border",
-        dim ? "opacity-55" : "",
+            ? "border border-border bg-surface"
+            : "border border-dashed border-muted/60 bg-elevated/40",
       ].join(" ")}
     >
-      <Handle type="target" position={Position.Top} className="!bg-border" />
+      <Handle type="target" position={Position.Top} className="!bg-muted" />
       <div className="flex items-center gap-1.5">
-        <span className="text-[11px] uppercase tracking-wide text-muted">
+        <span
+          className={`text-[11px] uppercase tracking-wide ${
+            data.visited ? "text-muted" : "text-muted/80"
+          }`}
+        >
           {data.kind === "start" ? "start" : "step"}
         </span>
         {data.visited ? (
@@ -61,13 +66,19 @@ function StepNode({ data }: NodeProps<StepNodeData>) {
           <span className="text-[10px] text-muted">· not run</span>
         )}
       </div>
-      <div className="font-medium text-fg text-sm truncate">{data.label}</div>
+      <div
+        className={`font-medium text-sm truncate ${
+          data.visited ? "text-fg" : "text-muted"
+        }`}
+      >
+        {data.label}
+      </div>
       {data.durationMs != null && (
         <div className="text-[11px] text-muted mt-0.5">
           {fmtDuration(data.durationMs)}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-border" />
+      <Handle type="source" position={Position.Bottom} className="!bg-muted" />
       <Handle id="slot" type="source" position={Position.Right} className="!bg-brand-500" />
     </div>
   );
@@ -110,12 +121,14 @@ export function TraceGraph({
   onSelectStep: (step: string | null) => void;
 }) {
   const [onlyVisited, setOnlyVisited] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
+  const slotCount = (doc.memory?.nodes ?? []).filter((n) => n.kind === "slot").length;
 
   const { nodes, edges, hasGraph } = useMemo(
-    // Memory (slot) nodes are always shown; "Only path taken" collapses the
-    // graph to the steps that actually ran.
-    () => buildGraph(doc, selectedStep, { showMemory: true, onlyVisited }),
-    [doc, selectedStep, onlyVisited],
+    // "Only path taken" collapses to the steps that ran; "View memory" overlays
+    // the slot (memory) nodes each step produced.
+    () => buildGraph(doc, selectedStep, { showMemory, onlyVisited }),
+    [doc, selectedStep, showMemory, onlyVisited],
   );
 
   return (
@@ -130,6 +143,11 @@ export function TraceGraph({
         {hasGraph && (
           <Toggle on={onlyVisited} onClick={() => setOnlyVisited((v) => !v)}>
             Only path taken
+          </Toggle>
+        )}
+        {slotCount > 0 && (
+          <Toggle on={showMemory} onClick={() => setShowMemory((v) => !v)}>
+            View memory{showMemory ? "" : ` (${slotCount})`}
           </Toggle>
         )}
       </div>
@@ -283,17 +301,23 @@ function buildGraph(
         animated: isTaken,
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: isTaken ? "rgb(166 221 31)" : "rgb(var(--border))",
+          color: isTaken ? "rgb(166 221 31)" : "rgb(var(--muted))",
         },
         style: {
-          stroke: isTaken ? "rgb(166 221 31)" : "rgb(var(--border))",
-          strokeWidth: isTaken ? 2 : 1.25,
+          // Inactive edges use the muted (zinc-500/400) color, not the faint
+          // border color, so they stay readable against the canvas.
+          stroke: isTaken ? "rgb(166 221 31)" : "rgb(var(--muted))",
+          strokeWidth: isTaken ? 2.25 : 1.5,
           strokeDasharray: isDefault && (s?.choices?.length ?? 0) > 0 ? "5 4" : undefined,
-          opacity: isTaken ? 1 : 0.7,
+          opacity: isTaken ? 1 : 0.85,
         },
-        labelStyle: { fill: "rgb(var(--muted))", fontSize: 10 },
-        labelBgStyle: { fill: "rgb(var(--surface))", fillOpacity: 0.9 },
-        labelBgPadding: [4, 2],
+        labelStyle: { fill: "rgb(var(--fg))", fontSize: 10, fontWeight: 500 },
+        labelBgStyle: {
+          fill: "rgb(var(--elevated))",
+          fillOpacity: 1,
+          stroke: "rgb(var(--border))",
+        },
+        labelBgPadding: [5, 3],
         labelBgBorderRadius: 4,
       });
     };
@@ -306,99 +330,93 @@ function buildGraph(
     }
   }
 
-  // --- layered layout via Dagre (handles ordering + crossing minimization) -
-  const pos = layoutWithDagre(nodes, edges);
+  // --- memory slot nodes (added BEFORE layout so Dagre spaces them) --------
+  // Each slot is a leaf attached to the step that produced it; Dagre ranks it
+  // just below that step, guaranteeing no overlap regardless of count.
+  if (opts.showMemory) {
+    const producedBy = new Map<string, string>();
+    for (const e of doc.memory?.edges ?? []) {
+      if (e.from?.startsWith("step:") && e.to?.startsWith("slot:")) {
+        producedBy.set(e.to, e.from.slice("step:".length));
+      }
+    }
+    for (const n of doc.memory?.nodes ?? []) {
+      if (n.kind !== "slot") continue;
+      const stepName = producedBy.get(n.id);
+      // Only attach slots whose producing step is in view.
+      if (stepName && !graphSteps[stepName]) continue;
+      nodes.push({
+        id: n.id,
+        type: "slot",
+        position: { x: 0, y: 0 },
+        data: { label: n.label ?? n.id, value: n.value },
+      });
+      if (stepName) {
+        edges.push({
+          id: `m:${stepName}->${n.id}`,
+          source: `step:${stepName}`,
+          sourceHandle: "slot",
+          target: n.id,
+          type: "smoothstep",
+          style: { stroke: "rgb(166 221 31)", strokeWidth: 1.5, strokeDasharray: "4 3" },
+        });
+      }
+    }
+  }
 
-  // --- memory slot nodes attach to producing step -------------------------
-  if (opts.showMemory) attachMemory(doc, pos, nodes, edges);
+  // --- layered layout via Dagre (handles ordering + crossing minimization) -
+  layoutWithDagre(nodes, edges);
 
   return { nodes, edges, hasGraph: true };
 }
 
 const STEP_W = 180;
 const STEP_H = 66;
+const SLOT_W = 150;
+const SLOT_H = 50;
 
-/** Position step nodes with Dagre (top-to-bottom layered DAG). Mutates each
- *  node's `position` and returns a step-id → position map for memory layout. */
-function layoutWithDagre(
-  nodes: Node[],
-  edges: Edge[],
-): Map<string, { x: number; y: number }> {
+/** Position all nodes with Dagre (top-to-bottom layered DAG). Steps and slot
+ *  nodes are sized by type; both step→step and step→slot edges participate so
+ *  slots get their own non-overlapping positions. Mutates node positions. */
+function layoutWithDagre(nodes: Node[], edges: Edge[]): void {
   const g = new dagre.graphlib.Graph();
   g.setGraph({
     rankdir: "TB",
-    nodesep: 60, // horizontal gap between siblings in a rank
-    ranksep: 80, // vertical gap between ranks
-    marginx: 20,
-    marginy: 20,
+    nodesep: 45, // horizontal gap between siblings in a rank
+    ranksep: 70, // vertical gap between ranks
+    marginx: 24,
+    marginy: 24,
   });
   g.setDefaultEdgeLabel(() => ({}));
 
-  for (const n of nodes) g.setNode(n.id, { width: STEP_W, height: STEP_H });
-  // Only edges between two step nodes participate in layering.
+  for (const n of nodes) {
+    const isSlot = n.type === "slot";
+    g.setNode(n.id, {
+      width: isSlot ? SLOT_W : STEP_W,
+      height: isSlot ? SLOT_H : STEP_H,
+    });
+  }
+  // Every edge (step→step and step→slot) participates so nothing overlaps.
   for (const e of edges) {
-    if (e.source.startsWith("step:") && e.target.startsWith("step:")) {
-      g.setEdge(e.source, e.target);
-    }
+    if (g.hasNode(e.source) && g.hasNode(e.target)) g.setEdge(e.source, e.target);
   }
 
   dagre.layout(g);
 
-  const pos = new Map<string, { x: number; y: number }>();
   for (const n of nodes) {
     const dn = g.node(n.id);
     if (!dn) continue;
+    const w = n.type === "slot" ? SLOT_W : STEP_W;
+    const h = n.type === "slot" ? SLOT_H : STEP_H;
     // Dagre returns node centers; ReactFlow wants top-left.
-    const x = dn.x - STEP_W / 2;
-    const y = dn.y - STEP_H / 2;
-    n.position = { x, y };
-    pos.set(n.id.replace(/^step:/, ""), { x, y });
+    n.position = { x: dn.x - w / 2, y: dn.y - h / 2 };
   }
-  return pos;
 }
 
 function condLabel(cond: string): string {
   const c = (cond || "").trim();
   if (!c) return "if";
   return c.length > 28 ? c.slice(0, 28) + "…" : c;
-}
-
-function attachMemory(
-  doc: SessionDoc,
-  pos: Map<string, { x: number; y: number }>,
-  nodes: Node[],
-  edges: Edge[],
-) {
-  const producedBy = new Map<string, string>();
-  for (const e of doc.memory?.edges ?? []) {
-    if (e.from?.startsWith("step:") && e.to?.startsWith("slot:")) {
-      producedBy.set(e.to, e.from.slice("step:".length));
-    }
-  }
-  let row = 0;
-  for (const n of doc.memory?.nodes ?? []) {
-    if (n.kind !== "slot") continue;
-    const stepName = producedBy.get(n.id);
-    const base = stepName ? pos.get(stepName) : undefined;
-    const x = (base?.x ?? 60) + 260;
-    const y = (base?.y ?? 30) + (row % 2) * 46;
-    row++;
-    nodes.push({
-      id: n.id,
-      type: "slot",
-      position: { x, y },
-      data: { label: n.label ?? n.id, value: n.value },
-    });
-    if (stepName) {
-      edges.push({
-        id: `m:${stepName}->${n.id}`,
-        source: `step:${stepName}`,
-        sourceHandle: "slot",
-        target: n.id,
-        style: { stroke: "rgb(166 221 31)", strokeDasharray: "4 3" },
-      });
-    }
-  }
 }
 
 /** Legacy path for sessions captured before workflow.graph existed. */
@@ -415,10 +433,10 @@ function fallbackGraph(
       order.push(ev.step);
     }
   }
-  const nodes: Node[] = order.map((step, i) => ({
+  const nodes: Node[] = order.map((step) => ({
     id: `step:${step}`,
     type: "step",
-    position: { x: 80, y: 20 + i * 120 },
+    position: { x: 0, y: 0 },
     data: {
       label: step,
       durationMs: durByStep.get(step) ?? null,
@@ -432,10 +450,11 @@ function fallbackGraph(
       id: `e:${order[i]}->${order[i + 1]}`,
       source: `step:${order[i]}`,
       target: `step:${order[i + 1]}`,
-      markerEnd: { type: MarkerType.ArrowClosed },
+      type: "smoothstep",
+      markerEnd: { type: MarkerType.ArrowClosed, color: "rgb(166 221 31)" },
       style: { stroke: "rgb(166 221 31)", strokeWidth: 2 },
     });
   }
-  attachMemory(doc, new Map(order.map((s, i) => [s, { x: 80, y: 20 + i * 120 }])), nodes, edges);
+  layoutWithDagre(nodes, edges);
   return { nodes, edges, hasGraph: false };
 }
