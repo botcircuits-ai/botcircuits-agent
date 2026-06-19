@@ -63,12 +63,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div
       className={cx(
-        "min-h-screen grid max-md:grid-cols-1",
+        "h-screen grid max-md:grid-cols-1",
         collapsed ? "grid-cols-[4rem_1fr]" : "grid-cols-[15rem_1fr]",
       )}
     >
       {/* Sidebar */}
-      <aside className="border-r border-border bg-surface flex flex-col max-md:hidden">
+      <aside className="border-r border-border bg-surface flex flex-col max-md:hidden h-screen sticky top-0">
         <div
           className={cx(
             "h-16 flex items-center border-b border-border",
@@ -144,8 +144,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main column */}
-      <div className="flex flex-col min-w-0">
-        <header className="h-16 border-b border-border bg-surface/80 backdrop-blur flex items-center gap-2 px-5 sticky top-0 z-10">
+      <div className="flex flex-col min-w-0 h-screen overflow-hidden">
+        <header className="h-16 shrink-0 border-b border-border bg-surface/80 backdrop-blur flex items-center gap-2 px-5 z-10">
           <div className="md:hidden mr-2">
             <Logo compact />
           </div>
@@ -178,7 +178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </button>
         </header>
 
-        <main className="flex-1 min-w-0 py-6 px-10 max-w-[100rem] w-full mx-auto">
+        <main className="flex-1 min-w-0 overflow-y-auto py-6 px-10 max-w-[100rem] w-full mx-auto">
           {children}
         </main>
       </div>

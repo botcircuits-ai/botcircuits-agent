@@ -109,7 +109,7 @@ function SessionDetail() {
             onSelectStep={setSelectedStep}
           />
           <p className="text-xs text-muted mt-2">
-            Steps run top-to-bottom; dashed lime edges show memory each step
+            Steps run top-to-bottom. dashed lime edges show memory each step
             produced (the memory flow). Click a step to highlight it in the
             timeline.
           </p>
