@@ -42,6 +42,8 @@ from botcircuits.agent.workflow.local import (
     _load_workflow_record,
     _resolve_workflows_dir,
 )
+from botcircuits.agent.workflow.tracing import SessionTrace, new_session_id
+from botcircuits.runtime.trace_hooks import traced_provider
 
 
 _RUNS_DIR_NAME = ".runs"
@@ -78,6 +80,93 @@ def _clear_state(name: str) -> None:
         pass
 
 
+# --- Tracing helpers -------------------------------------------------------
+
+def _open_trace(
+    *,
+    name: str,
+    runtime: str,
+    initial_slots: dict[str, Any],
+    saved_session_id: str | None,
+) -> SessionTrace | None:
+    """Open the session trace for this run. On resume (a saved session_id),
+    reopen the same file so events append into one timeline; otherwise start a
+    fresh session. Best-effort — a tracing failure never blocks the run."""
+    try:
+        if saved_session_id:
+            existing = SessionTrace.load(saved_session_id)
+            if existing is not None:
+                return existing
+        return SessionTrace.start(
+            workflow_name=name,
+            runtime=runtime,
+            initial_slots=initial_slots,
+            session_id=saved_session_id or new_session_id(),
+        )
+    except Exception:  # pragma: no cover - tracing must not break a run
+        return None
+
+
+def _trace_sink(trace: SessionTrace | None):
+    """Build the engine event_sink that records step-enter / branch events.
+
+    The engine emits ``("step_enter", {...})`` and ``("branch", {...})`` for its
+    own deterministic navigation; the traced provider handles action + slot
+    events. Returns ``None`` when not tracing so the engine skips the work."""
+    if trace is None:
+        return None
+
+    async def sink(kind: str, payload: Any) -> None:
+        try:
+            if kind == "step_enter" and isinstance(payload, dict):
+                trace.event(
+                    "step_enter",
+                    step=payload.get("step"),
+                    slots=payload.get("slots"),
+                    data={"actions": payload.get("actions") or []},
+                )
+            elif kind == "branch" and isinstance(payload, dict):
+                trace.event(
+                    "branch",
+                    step=payload.get("step"),
+                    slots=payload.get("slots"),
+                    data={
+                        "chosen_next": payload.get("chosen_next"),
+                        "default_next": payload.get("default_next"),
+                        "branched": payload.get("branched"),
+                    },
+                )
+        except Exception:  # pragma: no cover
+            pass
+
+    return sink
+
+
+def _record_memory_graph(
+    trace: SessionTrace, flow: dict, slots: dict[str, Any] | None,
+) -> None:
+    """Project the final state into the session memory graph: one node per
+    filled slot, plus step nodes from the trace, edges from each step to the
+    slots it produced. Best-effort."""
+    try:
+        produced: dict[str, str | None] = {}
+        for ev in trace._doc.get("trace", []):  # noqa: SLF001 - same package
+            if ev.get("type") == "action_after":
+                out = (ev.get("data") or {}).get("output") or {}
+                for k in (out.get("captured_slots") or {}):
+                    produced[k] = ev.get("step")
+        for k, v in (slots or {}).items():
+            if isinstance(k, str) and k.startswith("__"):
+                continue
+            trace.add_memory_node(f"slot:{k}", kind="slot", label=k, value=v)
+            src_step = produced.get(k)
+            if src_step:
+                trace.add_memory_node(f"step:{src_step}", kind="step", label=src_step)
+                trace.add_memory_edge(f"step:{src_step}", f"slot:{k}", kind="produces")
+    except Exception:  # pragma: no cover
+        pass
+
+
 async def _run(
     name: str,
     *,
@@ -111,14 +200,29 @@ async def _run(
     if reply:
         slots["__last_user_message__"] = reply
 
+    # --- Tracing -----------------------------------------------------------
+    # One session_id spans the whole run, including pause/resume: a resumed
+    # leg reopens the same session file (id stored in the run-state). The
+    # session_start event records the initial slots; the engine + the traced
+    # provider append step/action/slot/branch events; we close it at the end.
+    trace = _open_trace(
+        name=name,
+        runtime=resolved_name,
+        initial_slots=slots,
+        saved_session_id=saved.get("session_id"),
+    )
+    sink = _trace_sink(trace)
+    run_provider = traced_provider(provider, trace)
+
     try:
         result = await run_workflow_engine(
             flow,
             workflow_name=name,
-            run_segment=lambda **kw: provider.run_segment(**kw),
+            run_segment=lambda **kw: run_provider.run_segment(**kw),
             start_step_id=resume_step,
             slots=slots,
-            resolve_unfilled=lambda **kw: provider.resolve_slots(**kw),
+            resolve_unfilled=lambda **kw: run_provider.resolve_slots(**kw),
+            event_sink=sink,
         )
     finally:
         await provider.aclose()
@@ -127,7 +231,13 @@ async def _run(
         _save_state(name, {
             "engine_paused_step": result.paused_step or resume_step,
             "engine_slots": result.slots,
+            "session_id": trace.session_id if trace else None,
         })
+        if trace:
+            trace.event(
+                "paused", slots=result.slots,
+                data={"question": result.question},
+            )
         return {"status": "paused", "question": result.question, "name": name}
 
     _clear_state(name)
@@ -135,6 +245,9 @@ async def _run(
         k: v for k, v in (result.slots or {}).items()
         if not k.startswith("__")
     }
+    if trace:
+        _record_memory_graph(trace, flow, result.slots)
+        trace.end(status="done", summary=result.summary, slots=result.slots)
     return {"status": "done", "summary": result.summary, "slots": clean_slots}
 
 

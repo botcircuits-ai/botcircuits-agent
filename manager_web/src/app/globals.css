@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Theme tokens. Light is the default (clean white surfaces, per the BotCircuits
+ * marketing site); `.dark` on <html> swaps to a near-black palette. Values are
+ * space-separated RGB channels so Tailwind's `<alpha-value>` works.
+ */
+:root {
+  --bg: 250 250 249; /* stone-50 */
+  --surface: 255 255 255;
+  --elevated: 255 255 255;
+  --border: 228 228 231; /* zinc-200 */
+  --fg: 24 24 27; /* zinc-900 */
+  --muted: 113 113 122; /* zinc-500 */
+  --font-sans: "Inter", system-ui, sans-serif;
+}
+
+.dark {
+  --bg: 10 10 11;
+  --surface: 18 18 20;
+  --elevated: 24 24 27;
+  --border: 39 39 42; /* zinc-800 */
+  --fg: 244 244 245; /* zinc-100 */
+  --muted: 161 161 170; /* zinc-400 */
+}
+
+html,
+body {
+  background-color: rgb(var(--bg));
+  color: rgb(var(--fg));
+}
+
+/* Smooth theme transitions on surfaces/text without animating layout. */
+* {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 120ms;
+}
+
+/* ReactFlow surface should follow the theme rather than its default white. */
+.react-flow__renderer,
+.react-flow__pane {
+  background-color: rgb(var(--bg));
+}
+.react-flow__attribution {
+  display: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--border));
+  border-radius: 9999px;
+}

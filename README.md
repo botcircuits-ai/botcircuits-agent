@@ -252,6 +252,32 @@ gateway all live in **[docs/native-agent.md](docs/native-agent.md)**.
 
 ---
 
+## Manager & execution tracing
+
+Every workflow run is **traced** to its own session file under
+`.botcircuits/sessions/<session_id>-session.json` — the engine records when it
+received the request, each step entered, before/after each action (with the
+sub-agent's input, output, and duration), slot resolutions, branch decisions,
+and the slot snapshot at each point. A paused → resumed run keeps the same
+`session_id`, so its trace is one continuous timeline.
+
+The **Manager** surfaces these traces:
+
+- **Backend** (`src/botcircuits/manager`, FastAPI) — username/password auth from
+  `BOTCIRCUITS_MANAGER_ADMIN_USERNAME` / `_ADMIN_PASSWORD`, with read-only
+  session APIs. Run it with `botcircuits-manager` (default port 8700).
+- **Web** (`manager_web`, Next.js + Tailwind + ReactFlow) — lists sessions and
+  renders each as a **trace graph + memory flow** alongside an event timeline.
+  Light/dark themes. See [manager_web/README.md](manager_web/README.md).
+
+```bash
+export BOTCIRCUITS_MANAGER_ADMIN_USERNAME=admin BOTCIRCUITS_MANAGER_ADMIN_PASSWORD=change-me
+botcircuits-manager                          # backend  :8700
+cd manager_web && npm install && npm run dev # web       :3700
+```
+
+---
+
 ## Documentation
 
 - [Concepts](docs/concepts/00-index.md) — a concept-level tour (incl. [Runtime Providers](docs/concepts/11-runtime-providers.md)).

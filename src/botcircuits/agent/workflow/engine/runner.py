@@ -202,6 +202,21 @@ async def _emit_execs(
             pass
 
 
+async def _emit(
+    event_sink: Callable[[str, Any], Awaitable[None]] | None,
+    kind: str,
+    payload: Any,
+) -> None:
+    """Send one observability event to the sink. Never raises — observability
+    must not break a run."""
+    if event_sink is None:
+        return
+    try:
+        await event_sink(kind, payload)
+    except Exception:  # pragma: no cover
+        pass
+
+
 def _record_decision(
     step: dict,
     matched_next: str | None,
@@ -311,6 +326,16 @@ async def run_workflow_engine(
         )
         actions = _action_texts(flow, current.get("steps") or [], slots)
 
+        # Observability: announce entry into this segment (its head step, the
+        # actions about to run, and the slot snapshot) so a tracer can record
+        # the workflow's deterministic navigation. No-op without a sink.
+        await _emit(event_sink, "step_enter", {
+            "step": current.get("id"),
+            "steps": list(current.get("steps") or []),
+            "actions": list(actions),
+            "slots": dict(slots),
+        })
+
         # S4 — Tier-0 skip. When the segment is a SINGLE branch step explicitly
         # marked deterministic and EVERY one of its branch variables resolves in
         # code (resolver specs on all of them), the engine fills the slots
@@ -337,6 +362,14 @@ async def run_workflow_engine(
             decisions.extend(_record_decision(
                 branch_step, chosen, default_next, slots, captured_keys,
             ))
+            await _emit(event_sink, "branch", {
+                "step": branch_step_id,
+                "chosen_next": chosen,
+                "default_next": default_next,
+                "branched": chosen is not None and chosen != default_next,
+                "slots": dict(slots),
+                "tier0": True,
+            })
             current = by_id.get(chosen) if chosen else None
             continue
 
@@ -474,6 +507,13 @@ async def run_workflow_engine(
         decisions.extend(_record_decision(
             branch_step, chosen, default_next, slots, captured_keys,
         ))
+        await _emit(event_sink, "branch", {
+            "step": branch_step_id,
+            "chosen_next": chosen,
+            "default_next": default_next,
+            "branched": chosen is not None and chosen != default_next,
+            "slots": dict(slots),
+        })
         current = by_id.get(chosen) if chosen else None
 
     # S2 — engine renders the final answer from its own state (a declared
