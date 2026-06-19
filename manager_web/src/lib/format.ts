@@ -13,6 +13,9 @@ export function fmtTime(iso: string | null | undefined): string {
 
 export function fmtDuration(ms: number | null | undefined): string {
   if (ms == null) return "";
+  if (ms === 0) return "0 ms";
+  if (ms < 1) return `${ms.toFixed(3)} ms`;
+  if (ms < 10) return `${ms.toFixed(1)} ms`;
   if (ms < 1000) return `${ms.toFixed(0)} ms`;
   return `${(ms / 1000).toFixed(2)} s`;
 }
