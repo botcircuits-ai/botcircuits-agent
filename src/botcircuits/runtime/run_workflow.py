@@ -75,6 +75,69 @@ def _reply_grants_tools(reply: str | None, needs_tool: list[str]) -> list[str]:
     return []
 
 
+def _claude_settings_path(cwd: str | None = None) -> Path:
+    """`<cwd>/.claude/settings.json` — the permission policy the spawned
+    headless `claude` reads. This is Claude Code's settings file (NOT
+    BotCircuits' own `.botcircuits/settings.json`)."""
+    base = Path(cwd) if cwd else Path.cwd()
+    return base / ".claude" / "settings.json"
+
+
+def _persist_granted_tools(tools: list[str], cwd: str | None = None) -> list[str]:
+    """Add `tools` to `.claude/settings.json` → `permissions.allow` so the
+    grant is permanent: future runs' spawned `claude` inherit it from disk and
+    never pause for these tools again.
+
+    Idempotent — only tools not already allowed are added. Returns the tools
+    actually newly written (empty if all were already present or on any I/O /
+    parse error, which is logged and swallowed so a settings hiccup never
+    breaks the run).
+    """
+    if not tools:
+        return []
+    path = _claude_settings_path(cwd)
+    try:
+        data: dict = {}
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8")) or {}
+            except (OSError, json.JSONDecodeError) as e:
+                # Don't clobber a file we can't parse — surface and skip.
+                print(f"[runtime] could not read {path} to persist grant: {e}",
+                      file=sys.stderr)
+                return []
+        if not isinstance(data, dict):
+            print(f"[runtime] {path} is not a JSON object; skipping grant "
+                  "persistence", file=sys.stderr)
+            return []
+
+        perms = data.get("permissions")
+        if not isinstance(perms, dict):
+            perms = {}
+            data["permissions"] = perms
+        allow = perms.get("allow")
+        if not isinstance(allow, list):
+            allow = []
+            perms["allow"] = allow
+
+        existing = {a for a in allow if isinstance(a, str)}
+        added = [t for t in tools if t not in existing]
+        if not added:
+            return []
+        allow.extend(added)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return added
+    except OSError as e:
+        print(f"[runtime] could not write {path} to persist grant: {e}",
+              file=sys.stderr)
+        return []
+
+
 def _runs_dir() -> Path:
     return _resolve_workflows_dir() / _RUNS_DIR_NAME
 
@@ -263,6 +326,19 @@ async def _run(
             granted.append(t)
     if granted and hasattr(provider, "config"):
         provider.config.allowed_tools = granted
+    # Persist a FIRST-TIME grant to `.claude/settings.json` so it's permanent:
+    # the spawned `claude` reads that file from the project dir, so once a tool
+    # is allowed there, future runs never pause for it again. Best-effort —
+    # written to the same cwd the CLI provider spawns in.
+    if newly:
+        provider_cwd = getattr(getattr(provider, "config", None), "cwd", None)
+        persisted = _persist_granted_tools(newly, cwd=provider_cwd)
+        if persisted:
+            print(
+                f"[runtime] granted {', '.join(persisted)} permanently in "
+                f"{_claude_settings_path(provider_cwd)}",
+                file=sys.stderr,
+            )
 
     # --- Tracing -----------------------------------------------------------
     # One session_id spans the whole run, including pause/resume: a resumed
