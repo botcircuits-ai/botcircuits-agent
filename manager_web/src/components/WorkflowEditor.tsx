@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthoringChat } from "@/components/AuthoringChat";
 import { StepPanel } from "@/components/StepPanel";
@@ -357,24 +358,29 @@ export function WorkflowEditor({
 
   return (
     <div className="flex flex-col h-[calc(100vh-3rem)]">
-      {/* Header / toolbar */}
-      <div className="shrink-0 flex flex-wrap items-center gap-3 pb-4 border-b border-border">
-        <div className="flex items-center gap-2 min-w-0">
-          <WorkflowIcon className="w-5 h-5 text-brand-600 dark:text-brand-400 shrink-0" />
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={!isNew}
-            placeholder="workflow_name"
-            className={cx(
-              "font-mono text-sm rounded-lg border bg-bg px-3 h-9 text-fg focus:outline-none focus:ring-2 focus:ring-brand/40",
-              nameValid ? "border-border" : "border-danger/50",
-              !isNew && "opacity-70",
-            )}
-          />
-        </div>
+      {/* Header / toolbar — sticky so it stays visible while editing. */}
+      <div className="sticky top-0 z-20 shrink-0 bg-bg/95 backdrop-blur border-b border-border pb-3">
+        <Link
+          href="/workflows"
+          className="text-sm text-muted hover:text-fg inline-flex items-center gap-1 mb-2"
+        >
+          ← Workflows
+        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <WorkflowIcon className="w-5 h-5 text-brand-600 dark:text-brand-400 shrink-0" />
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="workflow_name"
+              className={cx(
+                "font-mono text-sm rounded-lg border bg-bg px-3 h-9 text-fg focus:outline-none focus:ring-2 focus:ring-brand/40",
+                nameValid ? "border-border" : "border-danger/50",
+              )}
+            />
+          </div>
 
-        <ModeToggle mode={mode} onChange={switchMode} />
+          <ModeToggle mode={mode} onChange={switchMode} />
 
         <div className="flex-1" />
 
@@ -400,10 +406,11 @@ export function WorkflowEditor({
         <button
           onClick={build}
           disabled={building}
-          className="h-9 px-3 rounded-lg text-sm font-medium bg-brand text-white hover:bg-brand-600 disabled:opacity-50"
+          className="h-9 px-3 rounded-lg text-sm font-semibold bg-brand text-zinc-900 hover:bg-brand-300 disabled:opacity-50"
         >
           {building ? "Building…" : "Save & Build"}
         </button>
+        </div>
       </div>
 
       {banner && (
@@ -501,7 +508,7 @@ export function WorkflowEditor({
               </button>
               <button
                 onClick={createConnectedStep}
-                className="h-9 px-3 rounded-lg text-sm font-medium bg-brand text-white hover:bg-brand-600"
+                className="h-9 px-3 rounded-lg text-sm font-semibold bg-brand text-zinc-900 hover:bg-brand-300"
               >
                 Create step
               </button>

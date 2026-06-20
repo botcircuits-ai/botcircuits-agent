@@ -122,7 +122,7 @@ export function AuthoringChat({
               className={
                 "inline-block rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap max-w-full text-left " +
                 (m.role === "user"
-                  ? "bg-brand text-white"
+                  ? "bg-brand text-zinc-900"
                   : "bg-elevated text-fg font-mono text-[12px]")
               }
             >
@@ -155,7 +155,7 @@ export function AuthoringChat({
           <button
             onClick={send}
             disabled={!input.trim() || !name || running}
-            className="h-9 px-3 rounded-lg text-sm font-medium bg-brand text-white hover:bg-brand-600 disabled:opacity-50"
+            className="h-9 px-3 rounded-lg text-sm font-semibold bg-brand text-zinc-900 hover:bg-brand-300 disabled:opacity-50"
           >
             {running ? "…" : "Send"}
           </button>

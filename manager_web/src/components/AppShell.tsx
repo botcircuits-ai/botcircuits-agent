@@ -26,8 +26,8 @@ type NavItem = {
 };
 
 const NAV: NavItem[] = [
-  { label: "Tracing", href: "/tracing", icon: <TraceIcon /> },
   { label: "Workflows", href: "/workflows", icon: <WorkflowIcon /> },
+  { label: "Tracing", href: "/tracing", icon: <TraceIcon /> },
 ];
 
 const COLLAPSE_KEY = "bc_manager_nav_collapsed";

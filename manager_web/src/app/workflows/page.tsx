@@ -64,10 +64,10 @@ function WorkflowList() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <RefreshButton onRefresh={load} />
+          <RefreshButton onRefresh={load} indicator={false} />
           <Link
             href="/workflows/new"
-            className="inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm font-medium bg-brand text-white hover:bg-brand-600"
+            className="inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm font-semibold bg-brand text-zinc-900 hover:bg-brand-300"
           >
             <PlusIcon className="w-[18px] h-[18px]" />
             New workflow
