@@ -29,6 +29,11 @@ USERNAME_ENV = "BOTCIRCUITS_MANAGER_ADMIN_USERNAME"
 PASSWORD_ENV = "BOTCIRCUITS_MANAGER_ADMIN_PASSWORD"
 SECRET_ENV = "BOTCIRCUITS_MANAGER_SECRET"
 
+#: Default admin credentials when neither env var is set. Convenient for local
+#: dev; override both vars in any real deployment.
+DEFAULT_USERNAME = "admin"
+DEFAULT_PASSWORD = "admin"
+
 #: Token lifetime (seconds). 12h is a reasonable admin-console default.
 TOKEN_TTL = 12 * 60 * 60
 
@@ -38,18 +43,17 @@ class AuthError(Exception):
 
 
 def _admin_username() -> str | None:
-    val = os.getenv(USERNAME_ENV)
-    return val if val else None
+    return os.getenv(USERNAME_ENV, DEFAULT_USERNAME) 
 
 
 def _admin_password() -> str | None:
-    val = os.getenv(PASSWORD_ENV)
-    return val if val else None
+    return os.getenv(PASSWORD_ENV, DEFAULT_PASSWORD) 
 
 
 def is_configured() -> bool:
-    """True when both admin credentials are present — without them the manager
-    refuses to authenticate anyone (fail closed)."""
+    """Always True: the manager falls back to the default ``admin``/``admin``
+    credentials when the env vars are unset, so authentication is always
+    available (override both vars in any real deployment)."""
     return bool(_admin_username() and _admin_password())
 
 

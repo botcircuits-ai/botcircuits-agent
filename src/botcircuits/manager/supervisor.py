@@ -194,10 +194,12 @@ def start(*, backend_only: bool = False, frontend_only: bool = False) -> dict:
         if existing and _pid_alive(existing.pid):
             pass  # already running
         else:
-            if not auth.is_configured():
+            if not (os.getenv(auth.USERNAME_ENV) and os.getenv(auth.PASSWORD_ENV)):
                 print(
                     f"[manager] warning: {auth.USERNAME_ENV} / {auth.PASSWORD_ENV} "
-                    "not set — login will fail until you set them.",
+                    f"not set — using default credentials "
+                    f"({auth.DEFAULT_USERNAME}/{auth.DEFAULT_PASSWORD}). "
+                    "Override both vars for any real deployment.",
                     file=sys.stderr,
                 )
             log = log_dir / "backend.log"

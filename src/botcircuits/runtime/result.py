@@ -95,6 +95,27 @@ def extract_json_object(raw: str) -> dict | None:
     return None
 
 
+def assistant_text_from_stdout(raw: str) -> str:
+    """Return the host CLI's final assistant TEXT from its stdout.
+
+    Unlike `segment_result_from_stdout` / `normalized_slots_from_stdout` (which
+    expect our JSON contract), this is for callers that want the raw model
+    reply as a string — the build-time LLM helpers do their own JSON
+    extraction on it. We only peel a known CLI envelope (claude-code's
+    `--output-format json` nests the reply under `result`/`text`); anything
+    else is passed through verbatim so the caller's own parser sees exactly
+    what the model emitted.
+    """
+    raw = raw or ""
+    direct = _loads_lenient(raw.strip())
+    if isinstance(direct, dict):
+        for key in _ENVELOPE_TEXT_KEYS:
+            inner = direct.get(key)
+            if isinstance(inner, str) and inner.strip():
+                return inner
+    return raw
+
+
 def segment_result_from_stdout(raw: str) -> SegmentResult:
     """Turn a CLI `run_segment` invocation's stdout into a `SegmentResult`.
 
@@ -162,6 +183,7 @@ def normalized_slots_from_stdout(raw: str) -> dict[str, Any]:
 
 __all__ = [
     "extract_json_object",
+    "assistant_text_from_stdout",
     "segment_result_from_stdout",
     "normalized_slots_from_stdout",
 ]

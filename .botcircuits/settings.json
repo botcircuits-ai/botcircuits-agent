@@ -1,6 +1,4 @@
 {
-  "provider": "openai",
-  "model": "gpt-5.2",
   "stream": true,
   "max_tokens": 4096,
   "max_steps": 500,

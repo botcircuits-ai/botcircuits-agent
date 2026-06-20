@@ -13,8 +13,12 @@
                                           prompt-only baseline on the
                                           dataset's cases.
 
-The builder uses the same LLM provider/model the main agent is configured
-with so the inference quality (and API key wiring) matches chat behavior.
+The builder runs its LLM work (compiling conditions, optimizing actions,
+authoring drafts) through the SAME host agent runtime that executes step
+actions — claude-code, codex, … auto-detected via `select_runtime`. So no
+third-party API key is needed and the inference quality matches the rest of
+the session. When no host agent is detected (standalone CLI), it falls back
+to the configured direct provider/model.
 """
 
 from __future__ import annotations
@@ -373,11 +377,41 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return _fail(result.get("error") or "workflow run failed", 1)
 
 
+def _make_build_provider(cfg):
+    """Pick the LLM that powers the build/generate pipeline.
+
+    Prefer the host AGENT runtime already running this session (claude-code,
+    codex, …) — the same way `workflow run` dispatches step actions via
+    `select_runtime`. The build helpers then compile conditions / optimize
+    actions / author drafts through that agent (no third-party API key), and
+    quality matches the rest of the session.
+
+    Falls back to the configured direct provider (`make_provider`) only when no
+    host agent is detected — e.g. running the CLI standalone with an API key.
+    Returns `(provider, label)`; `label` goes in the build log.
+    """
+    from .app import make_provider
+    from botcircuits.runtime.detect import NATIVE, detect_runtime_name
+    from botcircuits.runtime.cli_llm_provider import CliLLMProvider
+
+    # Mirror run_workflow's detection (env markers + PATH probe; the
+    # $BOTCIRCUITS_RUNTIME override still wins). `native` here means "no host
+    # CLI" — fall through to the direct provider rather than failing.
+    runtime_name = detect_runtime_name(settings=None)
+    if runtime_name != NATIVE:
+        from botcircuits.runtime.detect import runtime_config
+        config = runtime_config(runtime_name, settings=None)
+        return CliLLMProvider(config), f"runtime={runtime_name}"
+
+    provider = make_provider(cfg.provider, cfg.model)
+    return provider, f"provider={cfg.provider} model={provider.model}"
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     """`workflow generate --from <instructions> --name <name>` — author an
     intent-only workflow SOURCE from a natural-language description and write it
     to the workflows dir. Optionally build it (`--build`)."""
-    from .app import load_cli_config, make_provider
+    from .app import load_cli_config
     from botcircuits.agent.workflow.generator import generate_workflow
 
     name = args.workflow_name
@@ -402,10 +436,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         out(C.red(f"[config] {e}"))
         return 2
 
-    provider = make_provider(cfg.provider, cfg.model)
+    provider, label = _make_build_provider(cfg)
     out(C.dim(
-        f"generating workflow {name!r} from {from_path} "
-        f"using provider={cfg.provider} model={provider.model}"
+        f"generating workflow {name!r} from {from_path} using {label}"
     ))
     # File-path / item-list checks resolve relative to the run cwd (the agent
     # runs with cwd = the workspace, where data/ and the input record live).
@@ -475,7 +508,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
 def _cmd_build(args: argparse.Namespace) -> int:
     # Imported locally to dodge the app <-> commands_workflow circular import.
-    from .app import load_cli_config, make_provider
+    from .app import load_cli_config
 
     workflow_name = args.workflow_name or args.workflow_name_pos
     if not workflow_name:
@@ -502,11 +535,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         ))
         return 2
 
-    provider = make_provider(cfg.provider, cfg.model)
-    out(C.dim(
-        f"building {workflow_name!r} using provider={cfg.provider} "
-        f"model={provider.model}"
-    ))
+    provider, label = _make_build_provider(cfg)
+    out(C.dim(f"building {workflow_name!r} using {label}"))
 
     try:
         summary = asyncio.run(
