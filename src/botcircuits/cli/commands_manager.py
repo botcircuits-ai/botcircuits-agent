@@ -5,6 +5,8 @@
         tracking their PIDs so `manager stop` can find them.
   manager stop
         Stop the background services started by `manager start`.
+  manager restart [--backend-only|--frontend-only]
+        Stop the running services, then start them again.
   manager status
         Show which services are running, their ports/URLs, and log paths.
 
@@ -41,6 +43,20 @@ def add_manager_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     mgr_subs.add_parser("stop", help="Stop the background manager services.")
+
+    restart_p = mgr_subs.add_parser(
+        "restart", help="Stop, then start the manager backend + frontend."
+    )
+    rgrp = restart_p.add_mutually_exclusive_group()
+    rgrp.add_argument(
+        "--backend-only", dest="backend_only", action="store_true",
+        help="Restart only the FastAPI backend.",
+    )
+    rgrp.add_argument(
+        "--frontend-only", dest="frontend_only", action="store_true",
+        help="Restart only the Next.js frontend.",
+    )
+
     mgr_subs.add_parser("status", help="Show manager service status.")
 
 
@@ -49,6 +65,8 @@ def run_manager_command(args: argparse.Namespace) -> int:
         return _cmd_start(args)
     if args.manager_cmd == "stop":
         return _cmd_stop(args)
+    if args.manager_cmd == "restart":
+        return _cmd_restart(args)
     if args.manager_cmd == "status":
         return _cmd_status(args)
     out(C.red(f"[manager] unknown subcommand: {args.manager_cmd}"))
@@ -65,23 +83,42 @@ def _cmd_start(args: argparse.Namespace) -> int:
         out(C.red(f"[manager] {e}"))
         return 1
 
-    started = state.get("_started") or []
-    for svc in (supervisor.BACKEND, supervisor.FRONTEND):
-        info = state.get(svc)
-        if not isinstance(info, dict):
-            continue
-        url = f"http://127.0.0.1:{info.get('port')}"
-        verb = "started" if svc in started else "already running"
-        out(C.green(f"  ✓ {svc:<8} {verb}  pid={info.get('pid')}  {url}"))
-
-    if not started:
-        out(C.dim("  (nothing new to start)"))
+    fe = state.get(supervisor.FRONTEND)
+    if isinstance(fe, dict) and fe.get("port"):
+        url = f"http://127.0.0.1:{fe.get('port')}"
+        out(C.green(f"  Manager web runs on {url}"))
+        _open_browser(url)
     else:
-        out(C.dim(
-            "  logs: .botcircuits/manager/logs/  ·  stop with: "
-            "botcircuits manager stop"
-        ))
+        # No frontend (e.g. --backend-only). Surface the backend URL instead.
+        be = state.get(supervisor.BACKEND)
+        if isinstance(be, dict) and be.get("port"):
+            out(C.green(
+                f"  Manager backend runs on http://127.0.0.1:{be.get('port')}"
+            ))
+
+    out(C.dim(
+        "  logs: .botcircuits/manager/logs/  ·  stop with: "
+        "botcircuits manager stop"
+    ))
     return 0
+
+
+def _open_browser(url: str) -> None:
+    """Best-effort open `url` in the default browser. Never raises; on failure
+    prints a plain (non-error) note so the user can open it manually."""
+    import webbrowser
+
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        opened = False
+    if not opened:
+        out(C.dim(f"  unable to open browser automatically — open {url}"))
+
+
+def _cmd_restart(args: argparse.Namespace) -> int:
+    _cmd_stop(args)
+    return _cmd_start(args)
 
 
 def _cmd_stop(_args: argparse.Namespace) -> int:
