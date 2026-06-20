@@ -101,6 +101,7 @@ function StepNode({ data, id }: NodeProps<StepNodeData>) {
           autoFocus
           value={nameDraft}
           onChange={(e) => setNameDraft(e.target.value)}
+          onFocus={() => data.onSelect(data.label)}
           onBlur={commitName}
           onKeyDown={(e) => {
             if (e.key === "Enter") commitName();
@@ -128,6 +129,7 @@ function StepNode({ data, id }: NodeProps<StepNodeData>) {
         <textarea
           value={actionDraft}
           onChange={(e) => setActionDraft(e.target.value)}
+          onFocus={() => data.onSelect(data.label)}
           onBlur={() => {
             if (actionDraft !== (data.action ?? "")) data.onAction(stepId, actionDraft);
           }}
