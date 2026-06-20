@@ -67,6 +67,7 @@ class AgentRuntimeProvider(ABC):
         system_notes: list[str],
         slots: dict[str, Any],
         item_variables: list[dict] | None = None,
+        data_variables: list[dict] | None = None,
         event_sink: EventSink | None = None,
     ) -> SegmentResult:
         """Perform one segment's actions and report what it observed.

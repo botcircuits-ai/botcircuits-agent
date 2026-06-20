@@ -282,3 +282,82 @@ def test_stale_reply_cleared_so_loopback_question_pauses():
         slots=s))
     assert r.paused and r.paused_step == "q1"
     assert "__last_user_message__" not in r.slots
+
+
+# -- data variables (carried key-value memory) ------------------------------
+
+
+def _scrape_save_flow() -> dict:
+    """start → scrape (branch on count>0) → save | none.
+
+    `scraped_jobs` is a DATA variable (non-branch): the scrape segment
+    produces it, the save segment must receive it back via slots.
+    """
+    return {
+        "start": "start",
+        "variables": [
+            {"variableName": "count", "dataType": "number", "description": "n"},
+            {"variableName": "scraped_jobs", "dataType": "string",
+             "description": "carried payload"},
+        ],
+        "steps": {
+            "start": {"type": "start", "next": "scrape"},
+            "scrape": {
+                "type": "agentAction",
+                "settings": {"action": "scrape jobs"},
+                "next": "none",
+                "choices": [{
+                    "operator": "AND",
+                    "expressionList": [
+                        {"variable": "count", "operator": "greater than", "value": 0}
+                    ],
+                    "next": "save",
+                }],
+            },
+            "save": {"type": "agentAction", "settings": {"action": "save jobs"}},
+            "none": {"type": "agentAction", "settings": {"action": "print none"}},
+        },
+    }
+
+
+def test_data_variable_carries_from_scrape_to_save():
+    seen_data_vars: list[list[str]] = []
+    save_slots: dict = {}
+
+    async def run(*, actions, branch_variables, system_notes, slots,
+                  data_variables=None, **_):
+        # Every segment is offered the data variable in scope.
+        seen_data_vars.append(
+            [v["variableName"] for v in (data_variables or [])]
+        )
+        if "scrape jobs" in actions:
+            # Scrape produces BOTH the branch var and the data payload.
+            return SegmentResult(
+                text="scraped",
+                captured_slots={"count": 2, "scraped_jobs": '[{"t":"SWE"}]'},
+            )
+        if "save jobs" in actions:
+            # Save must SEE the carried payload in its slots.
+            save_slots.update(slots)
+        return SegmentResult(text="ok", captured_slots={})
+
+    res = asyncio.run(run_workflow_engine(
+        _built(_scrape_save_flow()), workflow_name="js", run_segment=run))
+
+    assert res.done and not res.paused
+    # Took the save branch (count>0), and save received the carried payload.
+    assert save_slots.get("scraped_jobs") == '[{"t":"SWE"}]'
+    assert save_slots.get("count") == 2
+    # The data variable was advertised to segments (not the branch-only set).
+    assert any("scraped_jobs" in dv for dv in seen_data_vars)
+
+
+def test_data_variable_absent_means_no_data_kwarg():
+    # A flow with ONLY branch variables passes no data_variables — simple
+    # runners that don't accept the kwarg still work (back-compat).
+    async def run(*, actions, branch_variables, system_notes, slots):
+        return SegmentResult(text="ok", captured_slots={"color": "red"})
+
+    res = asyncio.run(run_workflow_engine(
+        _built(_branch_flow()), workflow_name="br", run_segment=run))
+    assert res.done

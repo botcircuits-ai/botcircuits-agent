@@ -90,6 +90,7 @@ class InlineRuntime(AgentRuntimeProvider):
         system_notes: list[str],
         slots: dict[str, Any],
         item_variables: list[dict] | None = None,
+        data_variables: list[dict] | None = None,
         event_sink: EventSink | None = None,
     ) -> SegmentResult:
         # Seed mode: the host already performed THIS segment; return its values
@@ -104,6 +105,7 @@ class InlineRuntime(AgentRuntimeProvider):
             "actions": list(actions),
             "branch_variables": list(branch_variables),
             "item_variables": list(item_variables or []),
+            "data_variables": list(data_variables or []),
             "system_notes": list(system_notes),
         }
         return SegmentResult(paused=True, question=encode_action(payload))

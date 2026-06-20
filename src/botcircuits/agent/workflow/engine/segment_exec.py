@@ -201,6 +201,7 @@ def build_segment_user_message(
     branch_variables: list[dict],
     system_notes: list[str],
     item_variables: list[dict] | None = None,
+    data_variables: list[dict] | None = None,
 ) -> str:
     """The per-segment variable payload that rides AFTER the cached system
     prefix. Terse by design — the engine holds all the state."""
@@ -217,6 +218,18 @@ def build_segment_user_message(
             "After completing the action(s), call 'record_slots' with these "
             "branch variables (omit any you don't have):\n"
             + json.dumps(_schema_of(branch_variables), ensure_ascii=False)
+        )
+    if data_variables:
+        # Carried key-value memory: declared non-branch variables. Whatever a
+        # segment produces here is persisted into slots and handed to later
+        # (stateless) segments, so a "scrape" step can pass its data to a
+        # "save" step. Reported alongside branch slots, never used to branch.
+        parts.append(
+            "Also record (in the SAME 'record_slots' call / `slots` object) "
+            "any of these DATA variables you produced, so later steps can use "
+            "them — store the full value (e.g. a JSON list), omit ones you "
+            "didn't produce:\n"
+            + json.dumps(_schema_of(data_variables), ensure_ascii=False)
         )
     if item_variables:
         # S3 — listDecision: the model reports a LIST of per-item FACTS; the

@@ -49,6 +49,7 @@ class NativeRuntime(AgentRuntimeProvider):
         system_notes: list[str],
         slots: dict[str, Any],
         item_variables: list[dict] | None = None,
+        data_variables: list[dict] | None = None,
         event_sink: EventSink | None = None,
     ) -> SegmentResult:
         return await self._agent._run_segment(
@@ -57,6 +58,7 @@ class NativeRuntime(AgentRuntimeProvider):
             system_notes=system_notes,
             slots=slots,
             item_variables=item_variables,
+            data_variables=data_variables,
             event_sink=event_sink,
         )
 

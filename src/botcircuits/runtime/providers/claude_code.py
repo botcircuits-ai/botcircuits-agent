@@ -116,6 +116,7 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
         system_notes: list[str],
         slots: dict[str, Any],
         item_variables: list[dict] | None = None,
+        data_variables: list[dict] | None = None,
         event_sink: EventSink | None = None,
     ) -> SegmentResult:
         """Run one segment by invoking the host CLI once.
@@ -126,6 +127,7 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
         user_msg = build_segment_user_message(
             actions, branch_variables, system_notes,
             item_variables=item_variables,
+            data_variables=data_variables,
         )
         # The host CLI is stateless between segments, so it has no conversation
         # history. When the engine resumes a paused segment after the user

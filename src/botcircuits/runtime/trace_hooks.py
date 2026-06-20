@@ -29,6 +29,10 @@ def _segment_output(seg: SegmentResult) -> dict[str, Any]:
         "captured_items": list(seg.captured_items or []),
         "paused": bool(seg.paused),
         "question": seg.question or "",
+        # Tool(s) a permission-style pause was blocked on — recorded so a
+        # trace shows WHY a segment paused (and what a "yes" reply granted),
+        # not just the question text.
+        "needs_tool": list(seg.needs_tool or []),
     }
 
 
@@ -49,6 +53,7 @@ class _TracingProvider(AgentRuntimeProvider):
         system_notes: list[str],
         slots: dict[str, Any],
         item_variables: list[dict] | None = None,
+        data_variables: list[dict] | None = None,
         event_sink: EventSink | None = None,
     ) -> SegmentResult:
         # The action(s) about to run on the sub-agent, plus the slot context
@@ -59,6 +64,9 @@ class _TracingProvider(AgentRuntimeProvider):
             data={
                 "actions": list(actions),
                 "branch_variables": [v.get("variableName") for v in branch_variables],
+                "data_variables": [
+                    v.get("variableName") for v in (data_variables or [])
+                ],
                 "runtime": self.name,
             },
         )
@@ -69,6 +77,7 @@ class _TracingProvider(AgentRuntimeProvider):
             system_notes=system_notes,
             slots=slots,
             item_variables=item_variables,
+            data_variables=data_variables,
             event_sink=event_sink,
         )
         self._trace.event(

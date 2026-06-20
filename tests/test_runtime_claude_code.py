@@ -206,3 +206,23 @@ def test_no_allowed_tools_means_no_flag(tmp_path):
         actions=["x"], branch_variables=[], system_notes=[], slots={},
     ))
     assert "--allowedTools" not in res.text
+
+
+def test_data_variable_reported_slot_is_captured(tmp_path):
+    # The CLI contract carries ANY reported slot key, so a non-branch data
+    # variable (e.g. scraped_jobs) survives the process hop into slots.
+    script = _write_fake_cli(
+        tmp_path,
+        '{"slots": {"scraped_jobs": "[{\\"t\\":\\"SWE\\"}]", "job_count": 3}, '
+        '"text": "scraped"}',
+    )
+    rt = _runtime(script)
+    res = asyncio.run(rt.run_segment(
+        actions=["scrape jobs"],
+        branch_variables=[{"variableName": "job_count", "dataType": "number"}],
+        system_notes=[],
+        slots={},
+        data_variables=[{"variableName": "scraped_jobs", "dataType": "string"}],
+    ))
+    assert res.captured_slots["scraped_jobs"] == '[{"t":"SWE"}]'
+    assert res.captured_slots["job_count"] == 3

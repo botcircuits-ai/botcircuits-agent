@@ -110,6 +110,7 @@ class SegmentRunner(Protocol):
         system_notes: list[str],
         slots: dict[str, Any],
         item_variables: list[dict] | None = None,
+        data_variables: list[dict] | None = None,
     ) -> SegmentResult: ...
 
 
@@ -149,6 +150,35 @@ def _action_texts(flow: dict, step_ids: list[str], slots: dict) -> list[str]:
         action = (step.get("settings") or {}).get("action") or ""
         out.append(fill_text_with_slots(action, ctx) if action else "")
     return [a for a in out if a]
+
+
+def _branch_variable_names(flow: dict) -> set[str]:
+    """Every variable name referenced by any step's branch `choices`.
+
+    These are the decision variables; everything else declared in
+    `flow.variables` is a plain DATA variable — part of the workflow's
+    key-value memory, carried across segments but not used to branch.
+    """
+    names: set[str] = set()
+    for step in (flow.get("steps") or {}).values():
+        for ch in (step.get("choices") or []):
+            for expr in (ch.get("expressionList") or []):
+                var = expr.get("variable")
+                if isinstance(var, str):
+                    names.add(var)
+    return names
+
+
+def _data_variables(flow: dict) -> list[dict]:
+    """Declared variables that are NOT branch variables — the workflow's
+    carried key-value memory. A segment reports any of these it produces into
+    `slots`, so a later (stateless) segment can read them back."""
+    branch = _branch_variable_names(flow)
+    out: list[dict] = []
+    for v in (flow.get("variables") or []):
+        if isinstance(v, dict) and v.get("variableName") not in branch:
+            out.append(v)
+    return out
 
 
 def _eval_message(workflow_name: str, slots: dict) -> dict:
@@ -331,6 +361,9 @@ async def run_workflow_engine(
         branch_variables = (
             variables_for_step(flow, branch_step_id) if branch_step_id else []
         )
+        # Carried key-value memory: declared non-branch variables a segment may
+        # produce (e.g. `scraped_jobs`) so a later stateless segment reads them.
+        data_variables = _data_variables(flow)
         actions = _action_texts(flow, current.get("steps") or [], slots)
 
         # Observability: announce entry into this segment (its head step, the
@@ -441,11 +474,18 @@ async def run_workflow_engine(
             current = by_id.get(nxt) if nxt else None
             continue
 
+        # Pass `data_variables` only when present so simple SegmentRunner
+        # callables (and tests) that don't accept the kwarg keep working —
+        # mirrors how `item_variables` is passed only on the listDecision path.
+        seg_kwargs: dict[str, Any] = {}
+        if data_variables:
+            seg_kwargs["data_variables"] = data_variables
         seg = await run_segment(
             actions=actions,
             branch_variables=branch_variables,
             system_notes=[],
             slots=slots,
+            **seg_kwargs,
         )
         last_text = seg.text or last_text
 

@@ -459,6 +459,7 @@ class Agent:
         system_notes: list[str],
         slots: dict,
         item_variables: list[dict] | None = None,
+        data_variables: list[dict] | None = None,
         event_sink=None,
     ) -> SegmentResult:
         """Run ONE branch-delimited segment: a constant-size cached system
@@ -475,9 +476,14 @@ class Agent:
         reach the UI. When None, this runs non-streaming.
         """
         captured: dict = {}
+        # `record_slots` advertises branch variables AND carried data variables,
+        # so the native path can capture a "scrape" step's data payload into
+        # slots for a later "save" step — the same key-value memory the CLI
+        # runtime carries via its JSON contract.
+        record_slots_vars = list(branch_variables) + list(data_variables or [])
         record_slots = (
-            build_record_slots_tool(branch_variables, captured)
-            if branch_variables else None
+            build_record_slots_tool(record_slots_vars, captured)
+            if record_slots_vars else None
         )
         # S3 — for a listDecision segment, expose the list-capture tool instead
         # of (or alongside) record_slots. The model reports a list of per-item
@@ -494,6 +500,7 @@ class Agent:
         user_msg = build_segment_user_message(
             actions, branch_variables, system_notes,
             item_variables=item_variables,
+            data_variables=data_variables,
         )
         messages: list[Message] = [
             Message(role="user", blocks=[{"type": "text", "text": user_msg}]),
