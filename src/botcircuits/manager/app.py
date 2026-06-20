@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import os
 
+from typing import Any
+
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from botcircuits.manager import auth, store
+from botcircuits.manager import authoring, workflows as wf_store
 
 
 class LoginRequest(BaseModel):
@@ -32,6 +36,15 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     expires_in: int
+
+
+class WorkflowSaveRequest(BaseModel):
+    workflow: dict[str, Any]
+
+
+class AuthorRequest(BaseModel):
+    name: str
+    instruction: str
 
 
 def _require_user(authorization: str | None = Header(default=None)) -> str:
@@ -84,6 +97,65 @@ def create_app() -> FastAPI:
         if doc is None:
             raise HTTPException(status_code=404, detail="session not found")
         return doc
+
+    # --- Workflow management -------------------------------------------------
+
+    @app.get("/api/workflows")
+    def list_workflows(_user: str = Depends(_require_user)) -> list[dict]:
+        return wf_store.list_workflows()
+
+    @app.get("/api/workflows/{name}")
+    def get_workflow(name: str, _user: str = Depends(_require_user)) -> dict:
+        doc = wf_store.get_workflow(name)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        return doc
+
+    @app.put("/api/workflows/{name}")
+    def save_workflow(
+        name: str,
+        body: WorkflowSaveRequest,
+        _user: str = Depends(_require_user),
+    ) -> dict:
+        try:
+            return wf_store.save_workflow(name, body.workflow)
+        except wf_store.WorkflowStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.delete("/api/workflows/{name}")
+    def delete_workflow(name: str, _user: str = Depends(_require_user)) -> dict:
+        try:
+            deleted = wf_store.delete_workflow(name)
+        except wf_store.WorkflowStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not deleted:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        return {"deleted": True, "name": name}
+
+    @app.post("/api/workflows/{name}/build")
+    def build_workflow(name: str, _user: str = Depends(_require_user)) -> dict:
+        try:
+            return wf_store.build(name)
+        except wf_store.WorkflowStoreError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/api/workflows/author/stream")
+    def author_workflow(
+        name: str,
+        instruction: str,
+        token: str,
+    ) -> StreamingResponse:
+        # EventSource can't set an Authorization header, so this endpoint
+        # takes the bearer token as a query param and verifies it manually.
+        try:
+            auth.verify(token)
+        except auth.AuthError as e:
+            raise HTTPException(status_code=401, detail=str(e)) from e
+        return StreamingResponse(
+            authoring.author_stream(instruction, name),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return app
 

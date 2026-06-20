@@ -147,7 +147,7 @@ const ChevronIcon = () => (
   </svg>
 );
 
-const Th = ({ children }: { children: React.ReactNode }) => (
+const Th = ({ children }: { children?: React.ReactNode }) => (
   <th className="text-left font-medium px-4 py-3">{children}</th>
 );
 const Td = ({

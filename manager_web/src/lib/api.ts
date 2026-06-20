@@ -74,6 +74,55 @@ export type SessionDoc = {
   memory: { nodes: MemoryNode[]; edges: MemoryEdge[] };
 };
 
+// --- Workflow authoring types ----------------------------------------------
+
+/** The shared step-type constant. Today only `agentAction` is supported in the
+ * UI editor; more step types (question, systemAction, …) come later. */
+export const SUPPORTED_STEP_TYPES = ["agentAction"] as const;
+export const STEP_TYPE_AGENT_ACTION = "agentAction";
+
+export type WorkflowCondition = { condition: string; next: string };
+
+/** A raw authored step (source format — natural-language conditions). */
+export type WorkflowStep = {
+  type?: string;
+  id?: string;
+  next?: string | null;
+  settings?: { action?: string; [k: string]: unknown };
+  conditions?: WorkflowCondition[];
+  [k: string]: unknown;
+};
+
+export type WorkflowFlow = {
+  start?: string;
+  steps?: Record<string, WorkflowStep>;
+  [k: string]: unknown;
+};
+
+/** A raw, human-authored workflow source document (the `.botcircuits/workflows`
+ * file shape — steps nested under `flow`). */
+export type WorkflowDoc = {
+  name?: string;
+  description?: string;
+  flow?: WorkflowFlow;
+  [k: string]: unknown;
+};
+
+export type WorkflowSummary = {
+  name: string;
+  description: string;
+  step_count: number;
+  built: boolean;
+  updated_at: number;
+};
+
+export type BuildResult = {
+  ok: boolean;
+  returncode: number;
+  stdout: string;
+  stderr: string;
+};
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -129,4 +178,37 @@ export const api = {
 
   getSession: (token: string, id: string) =>
     request<SessionDoc>(`/api/sessions/${encodeURIComponent(id)}`, { token }),
+
+  // --- Workflows ---
+  listWorkflows: (token: string) =>
+    request<WorkflowSummary[]>("/api/workflows", { token }),
+
+  getWorkflow: (token: string, name: string) =>
+    request<WorkflowDoc>(`/api/workflows/${encodeURIComponent(name)}`, { token }),
+
+  saveWorkflow: (token: string, name: string, workflow: WorkflowDoc) =>
+    request<WorkflowDoc>(`/api/workflows/${encodeURIComponent(name)}`, {
+      token,
+      method: "PUT",
+      body: { workflow },
+    }),
+
+  deleteWorkflow: (token: string, name: string) =>
+    request<{ deleted: boolean; name: string }>(
+      `/api/workflows/${encodeURIComponent(name)}`,
+      { token, method: "DELETE" },
+    ),
+
+  buildWorkflow: (token: string, name: string) =>
+    request<BuildResult>(`/api/workflows/${encodeURIComponent(name)}/build`, {
+      token,
+      method: "POST",
+    }),
+
+  /** URL for the authoring SSE stream (token passed as query — EventSource
+   * cannot set an Authorization header). */
+  authorStreamUrl: (token: string, name: string, instruction: string) => {
+    const q = new URLSearchParams({ name, instruction, token });
+    return `${API_BASE}/api/workflows/author/stream?${q.toString()}`;
+  },
 };
