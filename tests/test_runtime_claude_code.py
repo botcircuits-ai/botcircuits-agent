@@ -165,3 +165,44 @@ def test_resolve_slots_tier0_deterministic_beats_cli(tmp_path):
         slots={"__last_user_message__": "my amount is 42"},
     ))
     assert out == {"amount": 42}
+
+
+def test_allowed_tools_appended_to_spawn_argv(tmp_path):
+    # A fake CLI that echoes ITS OWN argv back inside the JSON `text`, so we
+    # can assert --allowedTools <tool> reached the subprocess.
+    script = tmp_path / "echoargs"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, json\n"
+        "print(json.dumps({'slots': {}, 'text': ' '.join(sys.argv[1:])}))\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    rt = ClaudeCodeRuntime(RuntimeConfig(
+        name="claude-code",
+        command=[str(script), "-p", "{prompt}", "--output-format", "json"],
+        timeout=30.0,
+        allowed_tools=["WebSearch", "WebFetch"],
+    ))
+    res = asyncio.run(rt.run_segment(
+        actions=["search"], branch_variables=[], system_notes=[], slots={},
+    ))
+    assert "--allowedTools WebSearch WebFetch" in res.text
+
+
+def test_no_allowed_tools_means_no_flag(tmp_path):
+    script = tmp_path / "echoargs2"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, json\n"
+        "print(json.dumps({'slots': {}, 'text': ' '.join(sys.argv[1:])}))\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    rt = ClaudeCodeRuntime(RuntimeConfig(
+        name="claude-code",
+        command=[str(script), "-p", "{prompt}", "--output-format", "json"],
+        timeout=30.0,
+    ))
+    res = asyncio.run(rt.run_segment(
+        actions=["x"], branch_variables=[], system_notes=[], slots={},
+    ))
+    assert "--allowedTools" not in res.text

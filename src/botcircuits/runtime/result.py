@@ -65,7 +65,8 @@ def extract_json_object(raw: str) -> dict | None:
     #    or a CLI envelope we then unwrap.
     direct = _loads_lenient(raw.strip())
     if isinstance(direct, dict):
-        if any(k in direct for k in ("slots", "items", "paused", "normalized")):
+        if any(k in direct for k in
+               ("slots", "items", "paused", "needs_tool", "normalized")):
             return direct
         for key in _ENVELOPE_TEXT_KEYS:
             inner = direct.get(key)
@@ -150,12 +151,23 @@ def segment_result_from_stdout(raw: str) -> SegmentResult:
     question = obj.get("question") if isinstance(obj.get("question"), str) else ""
     text = obj.get("text") if isinstance(obj.get("text"), str) else ""
 
+    # A permission-style pause names the tool(s) it was blocked on. Accept a
+    # list of strings or a single string; ignore anything else.
+    raw_needs = obj.get("needs_tool")
+    if isinstance(raw_needs, str):
+        needs_tool = [raw_needs] if raw_needs.strip() else []
+    elif isinstance(raw_needs, list):
+        needs_tool = [t for t in raw_needs if isinstance(t, str) and t.strip()]
+    else:
+        needs_tool = []
+
     return SegmentResult(
         text=text,
         captured_slots=captured_slots,
         captured_items=captured_items,
         paused=paused,
         question=question or "",
+        needs_tool=needs_tool,
     )
 
 
@@ -177,7 +189,7 @@ def normalized_slots_from_stdout(raw: str) -> dict[str, Any]:
     # any contract/envelope keys that aren't slot values.
     return {
         k: v for k, v in obj.items()
-        if k not in ("paused", "question", "text", "items")
+        if k not in ("paused", "question", "text", "items", "needs_tool")
     }
 
 

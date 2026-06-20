@@ -33,12 +33,17 @@ class RuntimeConfig:
     main agent's working directory, the spawned CLI inherits that project's
     `.claude/settings.json` permission rules (the policy the user already
     approved). When ``None``, each segment gets a fresh isolated temp dir.
+    `allowed_tools` are extra tool names to grant the spawned CLI for this run
+    (appended as ``--allowedTools …``). The runner fills this from "yes, allow
+    it" replies to a permission-style pause, so a granted tool sticks for the
+    rest of the run without the user editing settings.
     """
 
     name: str
     command: list[str] = field(default_factory=list)
     timeout: float = 600.0
     cwd: str | None = None
+    allowed_tools: list[str] = field(default_factory=list)
 
 
 #: The event-sink callable the streaming path threads through so a segment's

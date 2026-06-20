@@ -46,7 +46,8 @@ _CLI_OUTPUT_CONTRACT = (
     "your FINAL output and nothing after it:\n"
     '  {"slots": {<branchVar: value>, ...}, '
     '"items": [{<itemFact: value>, ...}], '
-    '"paused": false, "question": "", "text": "<short result>"}\n'
+    '"paused": false, "question": "", "needs_tool": [], '
+    '"text": "<short result>"}\n'
     "Rules:\n"
     "  - `slots`: the branch variables you were asked to report; omit any "
     "you do not genuinely have, never invent one.\n"
@@ -54,6 +55,11 @@ _CLI_OUTPUT_CONTRACT = (
     "list element (never a decision/outcome word). Omit otherwise.\n"
     "  - If an action needs information only the user can provide, set "
     '`"paused": true` and put the question in `"question"`, then stop.\n'
+    "  - If you cannot proceed ONLY because a tool's permission is not "
+    'granted (e.g. WebSearch/WebFetch), set `"paused": true`, list the '
+    'exact tool name(s) in `"needs_tool"` (e.g. ["WebSearch"]), and put a '
+    'short request in `"question"`. Only list a tool a permission error '
+    "actually blocked — never one you already have.\n"
     "  - `text`: a short human-readable result line (optional).\n"
     "  - Output JSON ONLY for that final object — no markdown fence is "
     "required, but if you use one it must wrap the whole object."
@@ -89,6 +95,16 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
     def __init__(self, config: RuntimeConfig):
         self.config = config
         self.name = config.name or "claude-code"
+
+    def _command(self) -> list[str]:
+        """The spawn argv template, with any run-granted tools appended as
+        ``--allowedTools <tool> …`` so a "yes, allow it" reply takes effect on
+        the very next segment without the user touching settings.json."""
+        cmd = list(self.config.command)
+        tools = [t for t in (self.config.allowed_tools or []) if t]
+        if tools:
+            cmd += ["--allowedTools", *tools]
+        return cmd
 
     # -- segment execution --------------------------------------------------
 
@@ -143,7 +159,7 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
 
         try:
             res = await run_cli(
-                self.config.command, prompt, timeout=self.config.timeout,
+                self._command(), prompt, timeout=self.config.timeout,
                 cwd=self.config.cwd,
             )
         except CliExecError as e:
@@ -212,7 +228,7 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
         )
         try:
             res = await run_cli(
-                self.config.command, prompt, timeout=self.config.timeout,
+                self._command(), prompt, timeout=self.config.timeout,
                 cwd=self.config.cwd,
             )
         except CliExecError as e:

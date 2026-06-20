@@ -79,3 +79,30 @@ def test_normalized_wrapped_and_bare():
 def test_extract_json_object_none_on_empty():
     assert extract_json_object("") is None
     assert extract_json_object("no json here at all") is None
+
+
+def test_needs_tool_parsed_as_list():
+    r = segment_result_from_stdout(json.dumps(
+        {"paused": True, "question": "grant web?", "needs_tool": ["WebSearch"]}
+    ))
+    assert r.paused is True
+    assert r.needs_tool == ["WebSearch"]
+
+
+def test_needs_tool_accepts_single_string():
+    r = segment_result_from_stdout(json.dumps(
+        {"paused": True, "needs_tool": "WebFetch"}
+    ))
+    assert r.needs_tool == ["WebFetch"]
+
+
+def test_needs_tool_absent_is_empty():
+    r = segment_result_from_stdout(json.dumps({"slots": {"x": 1}}))
+    assert r.needs_tool == []
+
+
+def test_needs_tool_not_treated_as_slot_in_normalized():
+    # `needs_tool` is a contract key, never a normalized slot value.
+    assert normalized_slots_from_stdout(
+        json.dumps({"a": 1, "needs_tool": ["WebSearch"]})
+    ) == {"a": 1}

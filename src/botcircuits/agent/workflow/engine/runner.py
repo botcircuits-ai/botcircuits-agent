@@ -70,6 +70,10 @@ class SegmentResult:
     paused: bool = False
     #: The question to surface when `paused`.
     question: str = ""
+    #: When the pause is specifically because a tool permission is missing
+    #: (e.g. "WebSearch"), the tool name(s) the segment needs. The runner
+    #: carries this up so a "yes, allow it" reply can grant it on resume.
+    needs_tool: list[str] = field(default_factory=list)
     #: S3 — for a `listDecision` segment, the per-item fact-sets the model
     #: reported via `record_item_list`. The engine decides each deterministically.
     captured_items: list[dict] = field(default_factory=list)
@@ -84,6 +88,9 @@ class EngineResult:
     question: str = ""
     #: Segment head to resume from after a user-interaction pause.
     paused_step: str | None = None
+    #: Tool name(s) a permission-style pause needs (propagated from the
+    #: segment); empty for an ordinary user-input pause.
+    needs_tool: list[str] = field(default_factory=list)
     #: Final slot values, for the summary line and the eval harness.
     slots: dict[str, Any] = field(default_factory=dict)
     #: Per-branch audit records (§6).
@@ -418,6 +425,7 @@ async def run_workflow_engine(
                 return EngineResult(
                     paused=True, question=seg.question,
                     paused_step=current.get("id"), slots=slots,
+                    needs_tool=list(seg.needs_tool),
                     decisions=decisions,
                 )
             decided = _decide_list(
@@ -448,6 +456,7 @@ async def run_workflow_engine(
                 paused=True,
                 question=seg.question,
                 paused_step=current.get("id"),
+                needs_tool=list(seg.needs_tool),
                 slots=slots,
                 decisions=decisions,
             )

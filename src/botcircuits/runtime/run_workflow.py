@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,31 @@ from botcircuits.runtime.trace_hooks import traced_provider
 
 
 _RUNS_DIR_NAME = ".runs"
+
+#: Replies that count as "yes, grant the tool" when a segment paused asking
+#: for a tool permission. Matched case-insensitively as a leading token, so
+#: "yes use websearch" / "sure, go ahead" / "ok" all grant.
+_AFFIRMATIVE_RE = re.compile(
+    r"^\s*(yes|yep|yeah|yup|sure|ok|okay|go ahead|please do|do it|"
+    r"allow|grant|approved?|use it|fine|y)\b",
+    re.IGNORECASE,
+)
+
+
+def _reply_grants_tools(reply: str | None, needs_tool: list[str]) -> list[str]:
+    """If the user affirmatively answered a permission pause, return the tools
+    to grant; otherwise an empty list.
+
+    A permission pause carries the tool(s) it was blocked on in `needs_tool`.
+    An affirmative reply ("yes use websearch", "ok", "allow") grants exactly
+    those — we do NOT parse tool names out of free text, so the user can't
+    accidentally grant something the segment never asked for.
+    """
+    if not reply or not needs_tool:
+        return []
+    if _AFFIRMATIVE_RE.match(reply):
+        return list(needs_tool)
+    return []
 
 
 def _runs_dir() -> Path:
@@ -224,6 +250,20 @@ async def _run(
     if reply:
         slots["__last_user_message__"] = reply
 
+    # Grant-on-reply: a segment that paused for a missing tool permission
+    # recorded the tool(s) in run-state. If THIS reply affirmatively answers
+    # that pause, grant those tools for the rest of the run by handing them to
+    # the CLI provider (it appends `--allowedTools …` to each spawn). Granted
+    # tools accumulate across pauses and persist via run-state so they survive
+    # the next process hop too.
+    granted: list[str] = list(saved.get("granted_tools") or [])
+    newly = _reply_grants_tools(reply, list(saved.get("needs_tool") or []))
+    for t in newly:
+        if t not in granted:
+            granted.append(t)
+    if granted and hasattr(provider, "config"):
+        provider.config.allowed_tools = granted
+
     # --- Tracing -----------------------------------------------------------
     # One session_id spans the whole run, including pause/resume: a resumed
     # leg reopens the same session file (id stored in the run-state). The
@@ -257,6 +297,10 @@ async def _run(
             "engine_paused_step": result.paused_step or resume_step,
             "engine_slots": result.slots,
             "session_id": trace.session_id if trace else None,
+            # Carry the tool(s) this pause is blocked on so the next --reply
+            # can grant them, plus the running set already granted.
+            "needs_tool": list(result.needs_tool),
+            "granted_tools": granted,
         })
         if trace:
             trace.event(
