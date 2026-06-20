@@ -185,6 +185,14 @@ export function WorkflowEditor({
           const conditions = [...step.conditions];
           conditions[condIndex] = { ...conditions[condIndex], condition };
           s[from] = { ...step, conditions };
+        } else if (kind === "default") {
+          // Editing the default ("otherwise") edge: setting a condition converts
+          // it into a regular branch, leaving the step with no default path
+          // (the backend tolerates that). Clearing it again leaves it default.
+          if (condition.trim() && step.next) {
+            const conditions = [...(step.conditions ?? []), { condition, next: step.next }];
+            s[from] = { ...step, conditions, next: "" };
+          }
         }
       });
     },

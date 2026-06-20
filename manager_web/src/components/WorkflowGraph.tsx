@@ -3,16 +3,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dagre from "@dagrejs/dagre";
 import ReactFlow, {
+  BaseEdge,
   Background,
   ConnectionMode,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MarkerType,
   MiniMap,
   Position,
   ReactFlowProvider,
   applyNodeChanges,
+  getSmoothStepPath,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -234,6 +238,7 @@ function WorkflowGraphInner({
         nodes={currentNodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
         fitView
         fitViewOptions={{ padding: 0.2 }}
@@ -304,7 +309,6 @@ function buildGraph(
   const edges: Edge[] = [];
   for (const id of ids) {
     const s = steps[id] ?? {};
-    const branching = (s.conditions?.length ?? 0) > 0;
 
     (s.conditions ?? []).forEach((c, idx) => {
       if (!c.next || !steps[c.next]) return;
@@ -313,16 +317,11 @@ function buildGraph(
       );
     });
     if (s.next && steps[s.next]) {
+      // The default ("otherwise") edge is also editable: typing a condition
+      // into it converts it from the default path into a regular branch (the
+      // update handler moves `next` into `conditions` and clears `next`).
       edges.push(
-        makeEdge(
-          id,
-          s.next,
-          branching ? "otherwise" : "",
-          "default",
-          -1,
-          cb.onUpdateEdgeCondition,
-          /*readOnlyLabel*/ true,
-        ),
+        makeEdge(id, s.next, "", "default", -1, cb.onUpdateEdgeCondition),
       );
     }
   }
@@ -331,6 +330,14 @@ function buildGraph(
   return { nodes, edges };
 }
 
+type ConditionEdgeData = {
+  from: string;
+  kind: EdgeKind;
+  condIndex: number;
+  condition: string;
+  onUpdate: (from: string, kind: EdgeKind, condIndex: number, condition: string) => void;
+};
+
 function makeEdge(
   from: string,
   to: string,
@@ -338,55 +345,140 @@ function makeEdge(
   kind: EdgeKind,
   condIndex: number,
   onUpdate: (from: string, kind: EdgeKind, condIndex: number, condition: string) => void,
-  readOnlyLabel = false,
-): Edge {
+): Edge<ConditionEdgeData> {
+  const isDefault = kind === "default";
   return {
     id: `e:${from}->${to}:${kind}:${condIndex}`,
     source: `step:${from}`,
     target: `step:${to}`,
-    type: "smoothstep",
-    pathOptions: { borderRadius: 12 } as any,
-    label: readOnlyLabel ? (condition || undefined) : (
-      <EdgeConditionInput
-        value={condition}
-        onCommit={(v) => onUpdate(from, kind, condIndex, v)}
-      />
-    ),
+    type: "condition",
     markerEnd: { type: MarkerType.ArrowClosed, color: "rgb(var(--muted))" },
     style: {
       stroke: "rgb(var(--muted))",
       strokeWidth: 1.6,
-      strokeDasharray: kind === "default" && readOnlyLabel ? "5 4" : undefined,
+      strokeDasharray: isDefault ? "5 4" : undefined,
       opacity: 0.9,
     },
-    labelBgStyle: { fill: "transparent" },
-    labelStyle: { fill: "rgb(var(--fg))", fontSize: 10, fontWeight: 500 },
+    data: { from, kind, condIndex, condition, onUpdate },
   };
 }
 
-/** Inline-editable condition label rendered on a branch edge. */
+/** Custom edge: smoothstep path with an interactive HTML label at the midpoint.
+ *  Uses EdgeLabelRenderer so the label is real, clickable HTML (the `label`
+ *  prop only renders static, non-interactive text). */
+function ConditionEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  style,
+  data,
+}: EdgeProps<ConditionEdgeData>) {
+  const [path, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    borderRadius: 12,
+  });
+
+  return (
+    <>
+      <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
+      {data && (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan"
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: "all",
+            }}
+          >
+            <EdgeConditionInput
+              value={data.condition}
+              isDefault={data.kind === "default"}
+              onCommit={(v) => data.onUpdate(data.from, data.kind, data.condIndex, v)}
+            />
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+const edgeTypes = { condition: ConditionEdge };
+
+/**
+ * Inline condition label for a branch edge.
+ *
+ * When the condition is empty it shows a compact "Add condition" pill; clicking
+ * it (or an existing condition's text) opens an inline input to edit the
+ * condition prompt. Commits on blur / Enter, cancels on Escape.
+ */
 function EdgeConditionInput({
   value,
+  isDefault = false,
   onCommit,
 }: {
   value: string;
+  isDefault?: boolean;
   onCommit: (v: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
+
+  if (!editing) {
+    const empty = !value.trim();
+    // The default edge with no condition reads as "(default)"; typing
+    // a condition into it turns it into a regular branch.
+    const emptyLabel = isDefault ? "default" : "+ Add condition";
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className={[
+          "nodrag rounded px-1.5 py-0.5 text-[10px] font-medium border",
+          empty
+            ? isDefault
+              ? "border-dashed border-border text-muted bg-elevated hover:bg-surface"
+              : "border-dashed border-brand/50 text-brand-600 dark:text-brand-400 bg-brand/10 hover:bg-brand/20"
+            : "border-border bg-elevated text-fg hover:bg-surface",
+        ].join(" ")}
+        title={empty ? "Click to set a condition" : "Edit condition"}
+      >
+        {empty ? emptyLabel : value}
+      </button>
+    );
+  }
+
+  const commit = () => {
+    setEditing(false);
+    if (draft !== value) onCommit(draft);
+  };
+
   return (
     <input
+      autoFocus
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        if (draft !== value) onCommit(draft);
-      }}
+      onBlur={commit}
       onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") {
+          setDraft(value);
+          setEditing(false);
+        }
       }}
       placeholder="condition…"
-      className="nodrag nowheel rounded border border-border bg-elevated px-1.5 py-0.5 text-[10px] text-fg placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-brand/40"
-      style={{ width: Math.max(60, Math.min(180, (draft.length || 8) * 6)) }}
+      className="nodrag nowheel rounded border border-brand/50 bg-elevated px-1.5 py-0.5 text-[10px] text-fg placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-brand/40"
+      style={{ width: Math.max(80, Math.min(180, (draft.length || 10) * 6)) }}
     />
   );
 }
