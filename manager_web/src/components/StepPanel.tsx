@@ -24,12 +24,16 @@ export function StepPanel({
   step,
   onSelectStep,
   onChange,
+  onRequestDeleteStep,
 }: {
   doc: WorkflowDoc;
   selectedStep: string | null;
   step: WorkflowStep | null;
   onSelectStep: (id: string | null) => void;
   onChange: (doc: WorkflowDoc) => void;
+  /** Ask the parent to confirm-then-delete a step (same dialog as the graph
+   *  node right-click delete). */
+  onRequestDeleteStep: (id: string) => void;
 }) {
   const steps = doc.flow?.steps ?? {};
   const stepIds = Object.keys(steps);
@@ -58,17 +62,6 @@ export function StepPanel({
     });
     onSelectStep(id);
     setSettingsOpen(true);
-  };
-
-  const deleteStep = (id: string) => {
-    mutate((s) => {
-      delete s[id];
-      for (const v of Object.values(s)) {
-        if (v.next === id) v.next = "";
-        if (v.conditions) v.conditions = v.conditions.filter((c) => c.next !== id);
-      }
-    });
-    onSelectStep(null);
   };
 
   return (
@@ -147,7 +140,7 @@ export function StepPanel({
                   s[selectedStep] = { ...s[selectedStep], ...patch };
                 })
               }
-              onDelete={() => deleteStep(selectedStep)}
+              onDelete={() => onRequestDeleteStep(selectedStep)}
             />
           )}
         </Group>

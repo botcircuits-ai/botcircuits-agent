@@ -18,6 +18,21 @@ import { cx } from "@/lib/format";
 
 type Mode = "flow" | "json";
 
+/**
+ * Normalize a step's branching in place: if it has no default `next` and a
+ * single condition whose test is empty, that lone connection is really the
+ * default path — promote it to `next` and drop the empty `conditions`. Keeps
+ * the model honest after edits that leave a step with one unconditioned edge.
+ */
+function normalizeStep(step: WorkflowStep): void {
+  if (!step) return;
+  const conditions = step.conditions ?? [];
+  if (!step.next && conditions.length === 1 && !(conditions[0].condition ?? "").trim()) {
+    step.next = conditions[0].next;
+    delete step.conditions;
+  }
+}
+
 function emptyDoc(name: string): WorkflowDoc {
   return {
     name,
@@ -139,6 +154,7 @@ export function WorkflowEditor({
         JSON.stringify(doc.flow?.steps ?? {}),
       );
       const extra = fn(nextSteps) || {};
+      for (const id of Object.keys(nextSteps)) normalizeStep(nextSteps[id]);
       applyDoc({ ...doc, ...extra, flow: { ...(doc.flow ?? {}), steps: nextSteps } });
     },
     [doc, applyDoc],
@@ -429,6 +445,7 @@ export function WorkflowEditor({
                   step={selected ?? null}
                   onSelectStep={setSelectedStep}
                   onChange={applyDoc}
+                  onRequestDeleteStep={setPendingDeleteStep}
                 />
               </div>
             </>
