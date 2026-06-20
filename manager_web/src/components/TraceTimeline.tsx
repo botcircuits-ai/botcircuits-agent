@@ -118,12 +118,18 @@ function StepBlock({
           highlight ? "border-brand/50 bg-brand/5" : "border-border bg-surface",
         )}
       >
-        {/* Step header */}
+        {/* Step header. A segment can bundle several steps; show the full
+            path (e.g. not_found → ask_retry) so a non-head step isn't hidden
+            behind the segment's primary step name. */}
         <div className="px-3 py-2 flex items-center gap-2 border-b border-border">
           <span className="text-[11px] uppercase tracking-wide text-muted">
-            Step
+            {stepsOf(group.enter).length > 1 ? "Steps" : "Step"}
           </span>
-          <span className="font-medium text-fg text-sm">{group.step}</span>
+          <span className="font-medium text-fg text-sm">
+            {stepsOf(group.enter).length > 1
+              ? stepsOf(group.enter).join(" → ")
+              : group.step}
+          </span>
           {totalMs > 0 && (
             <span className="text-xs text-brand-700 dark:text-brand-300">
               {fmtDuration(totalMs)}
@@ -233,6 +239,14 @@ function EventCard({ ev }: { ev: TraceEvent }) {
 function actionsOf(ev: TraceEvent): string[] {
   const a = (ev.data as any)?.actions;
   return Array.isArray(a) ? a : [];
+}
+
+/** The actual steps a `step_enter` segment ran (the head plus any bundled
+ *  follow-on steps), falling back to the single event step. */
+function stepsOf(ev: TraceEvent): string[] {
+  const s = (ev.data as any)?.steps;
+  if (Array.isArray(s) && s.length > 0) return s.filter(Boolean);
+  return ev.step ? [ev.step] : [];
 }
 
 function EventData({ ev }: { ev: TraceEvent }) {

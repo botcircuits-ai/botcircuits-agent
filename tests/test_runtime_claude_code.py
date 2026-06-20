@@ -82,6 +82,65 @@ def test_missing_binary_pauses_not_crashes(tmp_path):
     assert "could not be started" in res.question
 
 
+def _write_prompt_echo_cli(tmp_path):
+    """A fake CLI that writes the prompt it received to `prompt.txt` (so the
+    test can assert on it) and prints a benign capture, exercising the real
+    prompt-building path."""
+    out_file = tmp_path / "prompt.txt"
+    script = tmp_path / "echocli"
+    script.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        # The prompt is passed as the argument after `-p` (see _runtime).
+        argv = sys.argv[1:]
+        prompt = ""
+        for i, a in enumerate(argv):
+            if a == "-p" and i + 1 < len(argv):
+                prompt = argv[i + 1]
+                break
+        open({str(out_file)!r}, "w").write(prompt)
+        sys.stdout.write('{{"slots": {{"again": "yes"}}, "paused": false}}')
+    """))
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return script, out_file
+
+
+def test_resume_prompt_instructs_to_consume_reply_not_reask(tmp_path):
+    """On resume (a `__last_user_message__` is present) the segment prompt must
+    explicitly tell the agent to treat the reply as the answer and NOT re-ask —
+    otherwise a branching question (e.g. a retry loop) re-asks forever."""
+    script, out_file = _write_prompt_echo_cli(tmp_path)
+    rt = _runtime(script)
+    res = asyncio.run(rt.run_segment(
+        actions=["Ask: check another order? (yes/no)"],
+        branch_variables=[{"variableName": "again", "dataType": "string"}],
+        system_notes=[],
+        slots={"__last_user_message__": "yes"},
+    ))
+    prompt = out_file.read_text()
+    assert "RESUMING AFTER A PAUSE" in prompt
+    assert "do NOT re-ask" in prompt
+    assert "yes" in prompt  # the user's reply is surfaced
+    # The fake agent honored it: captured the slot instead of pausing.
+    assert res.captured_slots == {"again": "yes"}
+    assert res.paused is False
+
+
+def test_no_resume_guidance_without_user_reply(tmp_path):
+    """A fresh (non-resume) segment carries no reply, so no resume block — the
+    agent should ask the question normally the first time."""
+    script, out_file = _write_prompt_echo_cli(tmp_path)
+    rt = _runtime(script)
+    asyncio.run(rt.run_segment(
+        actions=["Ask: check another order? (yes/no)"],
+        branch_variables=[{"variableName": "again", "dataType": "string"}],
+        system_notes=[],
+        slots={},
+    ))
+    prompt = out_file.read_text()
+    assert "RESUMING AFTER A PAUSE" not in prompt
+
+
 def test_resolve_slots_tier0_deterministic_beats_cli(tmp_path):
     # Tier-0 should resolve a number from the last user message WITHOUT
     # invoking the CLI. The fake CLI would return 999; Tier-0 returns 42, and

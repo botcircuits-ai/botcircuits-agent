@@ -122,11 +122,26 @@ def _trace_sink(trace: SessionTrace | None):
     async def sink(kind: str, payload: Any) -> None:
         try:
             if kind == "step_enter" and isinstance(payload, dict):
+                # A segment bundles one or more actual steps; `payload["step"]`
+                # is the segment HEAD, which for a transparent start/systemAction
+                # head (e.g. `start`) is not the step whose action runs. Label
+                # the event with the last real step in the segment (the one the
+                # action belongs to) and carry the full `steps` list so the UI
+                # can mark every bundled step visited — without it, steps that
+                # are never a segment head (e.g. a question or its follow-on)
+                # never appear "entered", breaking path connectivity.
+                seg_steps = [s for s in (payload.get("steps") or []) if s]
+                head = payload.get("step")
+                primary = seg_steps[-1] if seg_steps else head
                 trace.event(
                     "step_enter",
-                    step=payload.get("step"),
+                    step=primary,
                     slots=payload.get("slots"),
-                    data={"actions": payload.get("actions") or []},
+                    data={
+                        "actions": payload.get("actions") or [],
+                        "segment": head,
+                        "steps": seg_steps or ([head] if head else []),
+                    },
                 )
             elif kind == "branch" and isinstance(payload, dict):
                 trace.event(

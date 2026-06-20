@@ -118,10 +118,21 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
         last_user = ""
         if isinstance(slots, dict):
             last_user = str(slots.get("__last_user_message__") or "")
+        # On resume, the action text still reads as an instruction to ASK (e.g.
+        # "Ask: check another order?"), but the user has ALREADY answered — their
+        # reply is here. Without explicit guidance the agent re-asks and pauses
+        # forever (the stuck retry-loop bug). Tell it to treat this reply as the
+        # answer to THIS segment's question: fill the requested branch variables
+        # from it and DO NOT pause again unless the reply genuinely fails to
+        # answer (in which case re-ask, briefly acknowledging what they said).
         context_block = (
-            f"\n\nMost recent user message (their reply to the previous "
-            f"step):\n{last_user}" if last_user else ""
-        )
+            "\n\nRESUMING AFTER A PAUSE. The user has already replied to this "
+            "segment's question; their reply is below. Treat it as the answer: "
+            "extract the requested branch variable(s) from it and report them — "
+            'do NOT re-ask the same question or set "paused": true unless the '
+            "reply genuinely does not answer it.\n"
+            f"User reply: {last_user}"
+        ) if last_user else ""
         prompt = (
             ENGINE_SYSTEM_PROMPT
             + _CLI_OUTPUT_CONTRACT

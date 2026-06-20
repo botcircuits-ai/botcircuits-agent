@@ -331,9 +331,26 @@ function buildGraph(
   const hasGraph = allStepIds.length > 0;
 
   // --- trace-derived overlays ---------------------------------------------
+  // A `step_enter` covers a whole SEGMENT, which may bundle several actual
+  // steps (e.g. a `question` and the action that precedes it). The event's
+  // `step` is just the segment's primary step; `data.steps` lists every step
+  // the segment ran. Mark them ALL visited — otherwise a bundled step is never
+  // "entered", its node is dropped under "Only path taken", and the edges into
+  // and out of it dangle (the lookup_order→not_found-only bug).
   const visited = new Set<string>();
   for (const ev of doc.trace as TraceEvent[]) {
-    if (ev.type === "step_enter" && ev.step) visited.add(ev.step);
+    if (ev.type !== "step_enter") continue;
+    // The segment head (e.g. a transparent `start`) plus every bundled step
+    // were all entered. The head matters for connectivity: without it the
+    // `start → …` edge dangles under "Only path taken".
+    const head = (ev.data as any)?.segment;
+    if (head) visited.add(head);
+    const segSteps = (ev.data as any)?.steps;
+    if (Array.isArray(segSteps) && segSteps.length > 0) {
+      for (const s of segSteps) if (s) visited.add(s);
+    } else if (ev.step) {
+      visited.add(ev.step);
+    }
   }
 
   // "Only path taken" collapses the graph to the steps that actually ran.

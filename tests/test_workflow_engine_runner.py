@@ -86,6 +86,45 @@ def test_compute_segments_splits_on_branch():
     assert "red" in by_id and "blue" in by_id
 
 
+def test_question_step_is_isolated_into_its_own_segment():
+    """A `question` must never be bundled with a preceding action step.
+    Bundling breaks pause/resume — the resumed segment replays the earlier
+    action and re-asks, so the reply is never consumed and a branching retry
+    question never evaluates its choices (the stuck-retry-loop bug)."""
+    flow = {
+        "start": "start",
+        "variables": [],
+        "steps": {
+            "start": {"type": "start", "next": "inform"},
+            # An info action that statically flows into a branching question.
+            "inform": {
+                "type": "agentAction",
+                "settings": {"action": "tell the user something"},
+                "next": "ask_retry",
+            },
+            "ask_retry": {
+                "type": "question",
+                "settings": {"action": "check another? (yes/no)"},
+                "next": "end",
+                "choices": [{
+                    "operator": "OR",
+                    "expressionList": [
+                        {"variable": "again", "operator": "is", "value": "yes"}
+                    ],
+                    "next": "inform",
+                }],
+            },
+            "end": {"type": "agentAction", "settings": {"action": "bye"}},
+        },
+    }
+    by_id = {s["id"]: s for s in compute_segments(flow)}
+    # `inform` and `ask_retry` are SEPARATE segments — not bundled.
+    assert by_id["inform"]["steps"] == ["inform"]
+    assert by_id["inform"]["branchStep"] is None
+    assert by_id["ask_retry"]["steps"] == ["ask_retry"]
+    assert by_id["ask_retry"]["branchStep"] == "ask_retry"
+
+
 # -- engine loop ------------------------------------------------------------
 
 
@@ -173,3 +212,73 @@ def test_resolve_unfilled_backfills_before_branch():
     # Backfilled → branch resolves, no clarification.
     assert res.done and not res.paused
     assert res.slots.get("color") == "red"
+
+
+def _retry_loop_flow() -> dict:
+    """start → q1 (question) → q2 (branching question; "again" loops back to q1).
+    Models the order-status retry loop: two question steps, one looping back."""
+    return {
+        "start": "start",
+        "variables": [
+            {"variableName": "again", "dataType": "string", "description": "loop?"},
+        ],
+        "steps": {
+            "start": {"type": "start", "next": "q1"},
+            "q1": {"type": "question", "settings": {"action": "Ask: value?"},
+                   "next": "q2"},
+            "q2": {
+                "type": "question",
+                "settings": {"action": "Ask: again? (yes/no)"},
+                "next": "end",
+                "choices": [{
+                    "operator": "OR",
+                    "expressionList": [
+                        {"variable": "again", "operator": "is", "value": "yes"}
+                    ],
+                    "next": "q1",
+                }],
+            },
+            "end": {"type": "agentAction", "settings": {"action": "done"}},
+        },
+    }
+
+
+def test_stale_reply_cleared_so_loopback_question_pauses():
+    """The resume reply (`__last_user_message__`) must be consumed ONCE. When a
+    branching question loops back to an earlier question in the same in-process
+    walk, the earlier question must PAUSE for fresh input — not re-consume the
+    stale reply and spin the loop forever (the stuck-retry-loop bug)."""
+
+    async def run(*, actions, branch_variables, system_notes, slots):
+        reply = slots.get("__last_user_message__")
+        bvars = [v["variableName"] for v in branch_variables]
+        # A question with no fresh reply pauses; with a reply it consumes it.
+        if reply is None:
+            return SegmentResult(paused=True, question=" ".join(actions))
+        if bvars:  # q2: map reply to the branch var
+            return SegmentResult(captured_slots={bvars[0]: reply})
+        return SegmentResult(captured_slots={})  # q1: just consumes the reply
+
+    flow = _built(_retry_loop_flow())
+
+    # First leg: pauses at q1.
+    r = asyncio.run(run_workflow_engine(flow, workflow_name="loop", run_segment=run))
+    assert r.paused and r.paused_step == "start"
+
+    # Reply to q1 → engine advances to q2 and pauses there. Crucially it does
+    # NOT carry "v1" forward into q2.
+    s = {**r.slots, "__last_user_message__": "v1"}
+    r = asyncio.run(run_workflow_engine(
+        flow, workflow_name="loop", run_segment=run, start_step_id=r.paused_step,
+        slots=s))
+    assert r.paused and r.paused_step == "q2"
+
+    # Reply "yes" to q2 → loops back to q1, which MUST pause again (the stale
+    # "yes" was cleared, so q1 sees no reply). Before the fix this looped
+    # forever, re-deciding "yes" without ever pausing.
+    s = {**r.slots, "__last_user_message__": "yes"}
+    r = asyncio.run(run_workflow_engine(
+        flow, workflow_name="loop", run_segment=run, start_step_id=r.paused_step,
+        slots=s))
+    assert r.paused and r.paused_step == "q1"
+    assert "__last_user_message__" not in r.slots

@@ -211,3 +211,42 @@ def test_memory_graph_attributes_slots_to_current_step(sessions_env):
     edges = {(e["from"], e["to"]) for e in doc["memory"]["edges"]}
     assert ("step:check_stock", "slot:in_stock") in edges
     assert ("step:ship", "slot:shipped") in edges
+
+
+def test_trace_sink_labels_segment_by_primary_step_and_carries_steps(sessions_env):
+    """A `step_enter` covers a whole segment, whose HEAD (e.g. a transparent
+    `start`) is not the step whose action runs. The sink must label the event
+    with the segment's last real step and carry the full `steps` list, so the
+    graph can mark every bundled step visited (path connectivity) and the
+    timeline doesn't mislabel `start` for an `ask_order_id` action."""
+    import asyncio
+
+    from botcircuits.runtime.run_workflow import _trace_sink
+
+    t = SessionTrace.start(workflow_name="wf", runtime="claude-code", initial_slots={})
+    sink = _trace_sink(t)
+
+    # Transparent `start` head bundling the `ask_order_id` question.
+    asyncio.run(sink("step_enter", {
+        "step": "start",
+        "steps": ["ask_order_id"],
+        "actions": ["Ask: order ID?"],
+        "slots": {},
+    }))
+    # A segment bundling a non-branch step and its follow-on branch step.
+    asyncio.run(sink("step_enter", {
+        "step": "not_found",
+        "steps": ["not_found", "ask_retry"],
+        "actions": ["Tell customer no order found.", "Ask: check another?"],
+        "slots": {},
+    }))
+
+    doc = json.loads(SessionTrace.path_for(t.session_id).read_text())
+    enters = [e for e in doc["trace"] if e["type"] == EventType.STEP_ENTER]
+    # Labeled by the primary (last) real step, not the transparent head.
+    assert enters[0]["step"] == "ask_order_id"
+    assert enters[0]["data"]["segment"] == "start"
+    assert enters[0]["data"]["steps"] == ["ask_order_id"]
+    # Bundled segment keeps both steps so both render as visited.
+    assert enters[1]["step"] == "ask_retry"
+    assert enters[1]["data"]["steps"] == ["not_found", "ask_retry"]

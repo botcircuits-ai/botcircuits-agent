@@ -461,6 +461,12 @@ async def run_workflow_engine(
         # step's static `next` (computed at build time as another segment
         # head), or end the workflow.
         if not branch_step_id:
+            # The resume reply was the answer to THIS segment's question; it has
+            # now been consumed (run_segment saw it). Clear it before advancing
+            # so a later question step reached on the same in-process walk
+            # (e.g. a retry loop back to ask_order_id) pauses for fresh input
+            # instead of re-consuming the stale reply and spinning forever.
+            slots.pop("__last_user_message__", None)
             nxt = _static_next_after(current, steps)
             current = by_id.get(nxt) if nxt else None
             continue
@@ -514,6 +520,12 @@ async def run_workflow_engine(
             "branched": chosen is not None and chosen != default_next,
             "slots": dict(slots),
         })
+        # The resume reply has now been fully used by this branch segment (its
+        # run_segment, the Tier-0/Tier-2 backfill, and the branch eval). Clear
+        # it before following the chosen edge so a later question step in the
+        # same walk (e.g. ask_retry → ask_order_id → … → ask_retry) pauses for
+        # fresh input rather than re-consuming the stale reply and looping.
+        slots.pop("__last_user_message__", None)
         current = by_id.get(chosen) if chosen else None
 
     # S2 — engine renders the final answer from its own state (a declared

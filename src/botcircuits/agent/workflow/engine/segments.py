@@ -106,6 +106,18 @@ def compute_segments(flow: dict) -> list[dict[str, Any]]:
             if step is None:
                 break
 
+            # A `question` always BEGINS its own segment. If we reached one
+            # while a segment is already accumulating (it's not this segment's
+            # head), stop before it and re-queue it as a fresh head. Bundling a
+            # preceding action with a question breaks pause/resume: the resumed
+            # segment replays the earlier action and re-asks, so the user's
+            # reply is never consumed and a branching question (e.g. a retry
+            # loop) never evaluates its choices. Isolated, the question's
+            # segment re-runs only itself on resume and captures the answer.
+            if step.get("type") == "question" and ordered:
+                queue.append(cursor)
+                break
+
             if _pausing(step):
                 ordered.append(cursor)
 
