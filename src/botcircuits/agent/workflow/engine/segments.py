@@ -121,8 +121,13 @@ def compute_segments(flow: dict) -> list[dict[str, Any]]:
                 break
 
             # A question pauses for the user — end the segment here so the
-            # engine yields control even though it isn't a branch.
+            # engine yields control even though it isn't a branch. Its static
+            # `next` still seeds the following segment; without queueing it the
+            # graph past the question is unreachable and the run ends early.
             if step.get("type") == "question":
+                nxt = step.get("next")
+                if isinstance(nxt, str) and nxt:
+                    queue.append(nxt)
                 break
 
             nxt = step.get("next")
