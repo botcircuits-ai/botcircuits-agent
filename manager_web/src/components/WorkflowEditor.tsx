@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthoringChat } from "@/components/AuthoringChat";
 import { StepPanel } from "@/components/StepPanel";
@@ -11,6 +11,7 @@ import {
   STEP_TYPE_AGENT_ACTION,
   type BuildResult,
   type WorkflowDoc,
+  type WorkflowStep,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { cx } from "@/lib/format";
@@ -125,6 +126,116 @@ export function WorkflowEditor({
 
   const steps = doc.flow?.steps ?? {};
   const selected = selectedStep ? steps[selectedStep] : null;
+
+  // Pending "create new step?" prompt raised by a drag-to-empty-canvas; holds
+  // the source step the new node would be connected from.
+  const [pendingNewFrom, setPendingNewFrom] = useState<string | null>(null);
+
+  // --- Graph mutation helpers (canvas edits) -------------------------------
+  // All produce a new doc through applyDoc so the JSON view stays in sync.
+  const mutateSteps = useCallback(
+    (fn: (steps: Record<string, WorkflowStep>) => Partial<WorkflowDoc> | void) => {
+      const nextSteps: Record<string, WorkflowStep> = JSON.parse(
+        JSON.stringify(doc.flow?.steps ?? {}),
+      );
+      const extra = fn(nextSteps) || {};
+      applyDoc({ ...doc, ...extra, flow: { ...(doc.flow ?? {}), steps: nextSteps } });
+    },
+    [doc, applyDoc],
+  );
+
+  const renameStep = useCallback(
+    (oldId: string, newId: string) => {
+      if (!newId || newId === oldId) return;
+      const cur = doc.flow?.steps ?? {};
+      if (cur[newId]) return; // name collision — ignore
+      const nextSteps: Record<string, WorkflowStep> = JSON.parse(JSON.stringify(cur));
+      const old = nextSteps[oldId];
+      if (!old) return;
+      delete nextSteps[oldId];
+      nextSteps[newId] = { ...old, id: newId };
+      for (const v of Object.values(nextSteps)) {
+        if (v.next === oldId) v.next = newId;
+        if (v.conditions)
+          v.conditions = v.conditions.map((c) =>
+            c.next === oldId ? { ...c, next: newId } : c,
+          );
+      }
+      const start = doc.flow?.start === oldId ? newId : doc.flow?.start;
+      applyDoc({ ...doc, flow: { ...(doc.flow ?? {}), start, steps: nextSteps } });
+      if (selectedStep === oldId) setSelectedStep(newId);
+    },
+    [doc, applyDoc, selectedStep],
+  );
+
+  const updateAction = useCallback(
+    (id: string, action: string) =>
+      mutateSteps((s) => {
+        if (s[id]) s[id] = { ...s[id], settings: { ...(s[id].settings ?? {}), action } };
+      }),
+    [mutateSteps],
+  );
+
+  const updateEdgeCondition = useCallback(
+    (from: string, kind: "default" | "condition", condIndex: number, condition: string) => {
+      mutateSteps((s) => {
+        const step = s[from];
+        if (!step) return;
+        if (kind === "condition" && step.conditions?.[condIndex]) {
+          const conditions = [...step.conditions];
+          conditions[condIndex] = { ...conditions[condIndex], condition };
+          s[from] = { ...step, conditions };
+        }
+      });
+    },
+    [mutateSteps],
+  );
+
+  // Connect two existing steps: fill the default `next` if empty, otherwise add
+  // a new (empty-condition) branch the user can then label inline.
+  const connectSteps = useCallback(
+    (from: string, to: string) => {
+      if (from === to) return;
+      mutateSteps((s) => {
+        const step = s[from];
+        if (!step || !s[to]) return;
+        if (!step.next) {
+          s[from] = { ...step, next: to };
+        } else if (step.next === to) {
+          // already the default — nothing to do
+        } else {
+          const conditions = [...(step.conditions ?? [])];
+          if (!conditions.some((c) => c.next === to)) {
+            conditions.push({ condition: "", next: to });
+          }
+          s[from] = { ...step, conditions };
+        }
+      });
+    },
+    [mutateSteps],
+  );
+
+  // Drag ended on empty canvas — ask before creating.
+  const requestNewStep = useCallback((from: string) => setPendingNewFrom(from), []);
+
+  const createConnectedStep = useCallback(() => {
+    const from = pendingNewFrom;
+    setPendingNewFrom(null);
+    if (!from) return;
+    const cur = doc.flow?.steps ?? {};
+    let n = Object.keys(cur).length + 1;
+    let id = `step_${n}`;
+    while (cur[id]) id = `step_${++n}`;
+    mutateSteps((s) => {
+      s[id] = { type: STEP_TYPE_AGENT_ACTION, settings: { action: "" }, next: "", id };
+      const step = s[from];
+      if (step) {
+        if (!step.next) s[from] = { ...step, next: id };
+        else s[from] = { ...step, conditions: [...(step.conditions ?? []), { condition: "", next: id }] };
+      }
+    });
+    setSelectedStep(id);
+  }, [pendingNewFrom, doc, mutateSteps]);
 
   const save = useCallback(async () => {
     if (!token) return;
@@ -257,6 +368,11 @@ export function WorkflowEditor({
                   doc={doc}
                   selectedStep={selectedStep}
                   onSelectStep={setSelectedStep}
+                  onRenameStep={renameStep}
+                  onUpdateAction={updateAction}
+                  onUpdateEdgeCondition={updateEdgeCondition}
+                  onConnect={connectSteps}
+                  onConnectToEmpty={requestNewStep}
                 />
               </div>
               <div className="w-[320px] shrink-0 overflow-y-auto">
@@ -297,6 +413,38 @@ export function WorkflowEditor({
           {buildOutput.stderr}
         </pre>
       )}
+
+      {pendingNewFrom && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() => setPendingNewFrom(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-base font-semibold text-fg">Create a new step?</h2>
+            <p className="text-sm text-muted mt-2">
+              Add a new step connected from{" "}
+              <span className="font-mono text-fg">{pendingNewFrom}</span>.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setPendingNewFrom(null)}
+                className="h-9 px-3 rounded-lg text-sm text-muted hover:text-fg hover:bg-elevated"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createConnectedStep}
+                className="h-9 px-3 rounded-lg text-sm font-medium bg-brand text-white hover:bg-brand-600"
+              >
+                Create step
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -335,5 +483,3 @@ function ModeBtn({
     </button>
   );
 }
-
-export { STEP_TYPE_AGENT_ACTION };
