@@ -48,6 +48,7 @@ type StepNodeData = {
   action?: string;
   selected: boolean;
   isStart: boolean;
+  edgeHighlighted?: boolean;
   onSelect: (id: string) => void;
   onRename: (oldId: string, newId: string) => void;
   onAction: (id: string, action: string) => void;
@@ -74,10 +75,17 @@ function StepNode({ data, id }: NodeProps<StepNodeData>) {
       onClick={() => data.onSelect(data.label)}
       className={[
         "rounded-xl px-3 py-2 w-[210px] shadow-sm transition-shadow border bg-surface",
-        data.selected
-          ? "border-2 border-brand ring-2 ring-brand/40"
-          : "border-border",
+        data.edgeHighlighted
+          ? "border-2"
+          : data.selected
+            ? "border-2 border-brand ring-2 ring-brand/40"
+            : "border-border",
       ].join(" ")}
+      style={
+        data.edgeHighlighted
+          ? { borderColor: "rgb(96, 165, 250)", boxShadow: "0 0 0 3px rgba(96, 165, 250, 0.3)" }
+          : undefined
+      }
     >
       {/* With connectionMode="loose" a single handle acts as both source and
           target, so a connection can be drawn from either node's handle. */}
@@ -137,6 +145,10 @@ function StepNode({ data, id }: NodeProps<StepNodeData>) {
 
 const nodeTypes = { step: StepNode };
 
+/** Identifies an edge for deletion: its source step, kind, branch index, and
+ *  target step (the target is what's cleared/removed). */
+export type EdgeRef = { from: string; kind: EdgeKind; condIndex: number; to: string };
+
 export type WorkflowGraphHandlers = {
   onSelectStep: (step: string | null) => void;
   onRenameStep: (oldId: string, newId: string) => void;
@@ -151,6 +163,10 @@ export type WorkflowGraphHandlers = {
   onConnect: (from: string, to: string) => void;
   /** Drag ended on empty canvas: caller asks the user, then maybe creates. */
   onConnectToEmpty: (from: string) => void;
+  /** Request deletion of a step (caller confirms, then mutates). */
+  onRequestDeleteStep: (id: string) => void;
+  /** Request deletion of an edge (caller confirms, then mutates). */
+  onRequestDeleteEdge: (ref: EdgeRef) => void;
 };
 
 export function WorkflowGraph(props: {
@@ -164,6 +180,14 @@ export function WorkflowGraph(props: {
   );
 }
 
+// Blue highlight for a selected edge + its connected nodes (matches TraceGraph).
+const EDGE_HL = "rgb(96, 165, 250)";
+
+type CtxMenu =
+  | { kind: "node"; id: string; x: number; y: number; isStart: boolean }
+  | { kind: "edge"; ref: EdgeRef; x: number; y: number }
+  | null;
+
 function WorkflowGraphInner({
   doc,
   selectedStep,
@@ -173,10 +197,15 @@ function WorkflowGraphInner({
   onUpdateEdgeCondition,
   onConnect,
   onConnectToEmpty,
+  onRequestDeleteStep,
+  onRequestDeleteEdge,
 }: {
   doc: WorkflowDoc;
   selectedStep: string | null;
 } & WorkflowGraphHandlers) {
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [menu, setMenu] = useState<CtxMenu>(null);
+
   const { nodes: baseNodes, edges } = useMemo(
     () =>
       buildGraph(doc, selectedStep, {
@@ -193,6 +222,36 @@ function WorkflowGraphInner({
 
   const handleNodesChange = (changes: NodeChange[]) =>
     setCurrentNodes((nds) => applyNodeChanges(changes, nds));
+
+  // Apply blue highlight + flow animation to the selected edge and mark its
+  // source/target nodes so they highlight too. Kept separate from the layout
+  // memo so selecting an edge doesn't recompute the Dagre layout.
+  const { displayNodes, displayEdges } = useMemo(() => {
+    if (!selectedEdgeId) return { displayNodes: currentNodes, displayEdges: edges };
+    const sel = edges.find((e) => e.id === selectedEdgeId);
+    if (!sel) return { displayNodes: currentNodes, displayEdges: edges };
+    const hl = new Set([sel.source, sel.target]);
+    const displayNodes = currentNodes.map((n) =>
+      hl.has(n.id) ? { ...n, data: { ...n.data, edgeHighlighted: true } } : n,
+    );
+    const displayEdges = edges.map((e) =>
+      e.id === selectedEdgeId
+        ? {
+            ...e,
+            animated: true,
+            style: { ...e.style, stroke: EDGE_HL, strokeWidth: 2.5, opacity: 1 },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              ...(typeof e.markerEnd === "object" ? e.markerEnd : {}),
+              color: EDGE_HL,
+            },
+          }
+        : e,
+    );
+    return { displayNodes, displayEdges };
+  }, [currentNodes, edges, selectedEdgeId]);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   // Track where a connection drag started so a drop on empty canvas can create
   // a new step connected from that source.
@@ -233,10 +292,10 @@ function WorkflowGraphInner({
   );
 
   return (
-    <div className="h-full w-full rounded-2xl border border-border bg-bg overflow-hidden">
+    <div className="relative h-full w-full rounded-2xl border border-border bg-bg overflow-hidden">
       <ReactFlow
-        nodes={currentNodes}
-        edges={edges}
+        nodes={displayNodes}
+        edges={displayEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
@@ -244,7 +303,36 @@ function WorkflowGraphInner({
         fitViewOptions={{ padding: 0.2 }}
         minZoom={0.15}
         proOptions={{ hideAttribution: true }}
-        onPaneClick={() => onSelectStep(null)}
+        onPaneClick={() => {
+          onSelectStep(null);
+          setSelectedEdgeId(null);
+          closeMenu();
+        }}
+        onNodeClick={(_, node) => {
+          setSelectedEdgeId(null);
+          closeMenu();
+          onSelectStep((node.data as StepNodeData).label);
+        }}
+        onEdgeClick={(_, edge) => {
+          closeMenu();
+          setSelectedEdgeId((prev) => (prev === edge.id ? null : edge.id));
+        }}
+        onNodeContextMenu={(e, node) => {
+          e.preventDefault();
+          const d = node.data as StepNodeData;
+          setMenu({ kind: "node", id: d.label, x: e.clientX, y: e.clientY, isStart: d.isStart });
+        }}
+        onEdgeContextMenu={(e, edge) => {
+          e.preventDefault();
+          const d = (edge as Edge<ConditionEdgeData>).data;
+          if (!d) return;
+          setMenu({
+            kind: "edge",
+            ref: { from: d.from, kind: d.kind, condIndex: d.condIndex, to: d.to },
+            x: e.clientX,
+            y: e.clientY,
+          });
+        }}
         onNodesChange={handleNodesChange}
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
@@ -259,11 +347,85 @@ function WorkflowGraphInner({
           className="!bg-surface !border !border-border rounded-lg"
           maskColor="rgb(var(--bg) / 0.6)"
           nodeColor={(n) =>
-            (n.data as any)?.selected ? "rgb(130 176 21)" : "rgb(var(--border))"
+            (n.data as any)?.edgeHighlighted
+              ? EDGE_HL
+              : (n.data as any)?.selected
+                ? "rgb(130 176 21)"
+                : "rgb(var(--border))"
           }
           nodeStrokeWidth={2}
         />
       </ReactFlow>
+
+      {menu && (
+        <ContextMenu
+          menu={menu}
+          onClose={closeMenu}
+          onDeleteNode={(id) => {
+            closeMenu();
+            onRequestDeleteStep(id);
+          }}
+          onDeleteEdge={(ref) => {
+            closeMenu();
+            setSelectedEdgeId(null);
+            onRequestDeleteEdge(ref);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Right-click delete menu for a node or edge. Closes on outside click/Escape. */
+function ContextMenu({
+  menu,
+  onClose,
+  onDeleteNode,
+  onDeleteEdge,
+}: {
+  menu: NonNullable<CtxMenu>;
+  onClose: () => void;
+  onDeleteNode: (id: string) => void;
+  onDeleteEdge: (ref: EdgeRef) => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    const onDown = () => onClose();
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onDown);
+    };
+  }, [onClose]);
+
+  const isStartNode = menu.kind === "node" && menu.isStart;
+
+  return (
+    <div
+      className="fixed z-50 min-w-[160px] rounded-lg border border-border bg-surface py-1 shadow-xl"
+      style={{ left: menu.x, top: menu.y }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {menu.kind === "node" ? (
+        <button
+          disabled={isStartNode}
+          onClick={() => onDeleteNode(menu.id)}
+          className="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-danger/10 disabled:opacity-40 disabled:hover:bg-transparent"
+          title={isStartNode ? "The start step cannot be deleted" : undefined}
+        >
+          Delete step
+        </button>
+      ) : (
+        <button
+          onClick={() => onDeleteEdge(menu.ref)}
+          className="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
+        >
+          Delete connection
+        </button>
+      )}
     </div>
   );
 }
@@ -332,6 +494,7 @@ function buildGraph(
 
 type ConditionEdgeData = {
   from: string;
+  to: string;
   kind: EdgeKind;
   condIndex: number;
   condition: string;
@@ -359,7 +522,7 @@ function makeEdge(
       strokeDasharray: isDefault ? "5 4" : undefined,
       opacity: 0.9,
     },
-    data: { from, kind, condIndex, condition, onUpdate },
+    data: { from, to, kind, condIndex, condition, onUpdate },
   };
 }
 

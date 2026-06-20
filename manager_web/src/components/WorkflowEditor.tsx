@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthoringChat } from "@/components/AuthoringChat";
 import { StepPanel } from "@/components/StepPanel";
-import { WorkflowGraph } from "@/components/WorkflowGraph";
+import { WorkflowGraph, type EdgeRef } from "@/components/WorkflowGraph";
 import { CodeIcon, SparkleIcon, WorkflowIcon } from "@/components/icons";
 import {
   api,
@@ -245,6 +245,43 @@ export function WorkflowEditor({
     setSelectedStep(id);
   }, [pendingNewFrom, doc, mutateSteps]);
 
+  // --- Deletion (confirm-then-mutate) --------------------------------------
+  const [pendingDeleteStep, setPendingDeleteStep] = useState<string | null>(null);
+  const [pendingDeleteEdge, setPendingDeleteEdge] = useState<EdgeRef | null>(null);
+
+  const confirmDeleteStep = useCallback(() => {
+    const id = pendingDeleteStep;
+    setPendingDeleteStep(null);
+    if (!id) return;
+    mutateSteps((s) => {
+      delete s[id];
+      // Clear dangling references so the graph/build stay consistent.
+      for (const v of Object.values(s)) {
+        if (v.next === id) v.next = "";
+        if (v.conditions) v.conditions = v.conditions.filter((c) => c.next !== id);
+      }
+    });
+    if (selectedStep === id) setSelectedStep(null);
+  }, [pendingDeleteStep, mutateSteps, selectedStep]);
+
+  const confirmDeleteEdge = useCallback(() => {
+    const ref = pendingDeleteEdge;
+    setPendingDeleteEdge(null);
+    if (!ref) return;
+    mutateSteps((s) => {
+      const step = s[ref.from];
+      if (!step) return;
+      if (ref.kind === "default") {
+        s[ref.from] = { ...step, next: "" };
+      } else if (step.conditions) {
+        s[ref.from] = {
+          ...step,
+          conditions: step.conditions.filter((_, i) => i !== ref.condIndex),
+        };
+      }
+    });
+  }, [pendingDeleteEdge, mutateSteps]);
+
   const save = useCallback(async () => {
     if (!token) return;
     if (!nameValid) {
@@ -381,6 +418,8 @@ export function WorkflowEditor({
                   onUpdateEdgeCondition={updateEdgeCondition}
                   onConnect={connectSteps}
                   onConnectToEmpty={requestNewStep}
+                  onRequestDeleteStep={setPendingDeleteStep}
+                  onRequestDeleteEdge={setPendingDeleteEdge}
                 />
               </div>
               <div className="w-[320px] shrink-0 overflow-y-auto">
@@ -453,6 +492,84 @@ export function WorkflowEditor({
           </div>
         </div>
       )}
+
+      {pendingDeleteStep && (
+        <ConfirmDialog
+          title="Delete step?"
+          body={
+            <>
+              Delete <span className="font-mono text-fg">{pendingDeleteStep}</span> and
+              remove every connection pointing to it. This cannot be undone.
+            </>
+          }
+          confirmLabel="Delete step"
+          onCancel={() => setPendingDeleteStep(null)}
+          onConfirm={confirmDeleteStep}
+        />
+      )}
+
+      {pendingDeleteEdge && (
+        <ConfirmDialog
+          title="Delete connection?"
+          body={
+            <>
+              Remove the connection{" "}
+              <span className="font-mono text-fg">
+                {pendingDeleteEdge.from} → {pendingDeleteEdge.to}
+              </span>
+              {pendingDeleteEdge.kind === "default"
+                ? " (the default path)."
+                : " (a branch condition)."}
+            </>
+          }
+          confirmLabel="Delete connection"
+          onCancel={() => setPendingDeleteEdge(null)}
+          onConfirm={confirmDeleteEdge}
+        />
+      )}
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  body: React.ReactNode;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold text-fg">{title}</h2>
+        <p className="text-sm text-muted mt-2">{body}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="h-9 px-3 rounded-lg text-sm text-muted hover:text-fg hover:bg-elevated"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="h-9 px-3 rounded-lg text-sm font-medium bg-danger text-white hover:bg-danger/90"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
