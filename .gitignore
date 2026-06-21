@@ -15,7 +15,10 @@ wheels/
 !.env.example
 
 # BotCircuits settings
-.botcircuits/
+.botcircuits/workflows/.build
+.botcircuits/workflows/.runs
+.botcircuits/manager
+.botcircuits/sessions
 
 .playwright-mcp
 sandbox
