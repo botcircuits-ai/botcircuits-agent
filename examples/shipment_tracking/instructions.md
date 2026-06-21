@@ -7,64 +7,75 @@ No JSON here — authoring is done separately.
 
 ---
 
-## Use case: Complex flow with web fetch + multiple conditions
+## Use case: Batch shipment tracking (file in → web fetch → JSON out)
 
-> Create a workflow named **`shipment_tracking`** that tracks a customer's
-> parcel and decides what to do based on its live status.
+> Create a workflow named **`shipment_tracking`** that checks the live status of
+> **many parcels at once**, reading the tracking numbers from a text file and
+> writing a single results file at the end.
+>
+> Use `http://localhost:4000/v1` as the carrier API host (a local mock — see
+> `api/` and the README to start it).
 >
 > **What it should do, step by step:**
 >
-> 1. **Start.** Take a `tracking_number` and the customer's `email` as inputs.
+> 1. **Start.** Take a `tracking_file` input — the path to a plain-text file
+>    that holds one tracking number per line (default it to
+>    `tracking-ids.txt`). Read the file, trim whitespace, and ignore blank
+>    lines. This produces a list of tracking numbers to process.
 >
-> 2. **Fetch live status (web fetch).** Call the carrier's tracking API by
->    fetching the URL
+> 2. **Loop over every tracking number.** For each one, run the fetch +
+>    classification below, collect a result record, and continue to the next.
+>    Do **not** ask the user anything per item — this is an unattended batch
+>    run.
+>
+> 3. **Fetch live status (web fetch).** For the current tracking number, fetch
 >    `http://localhost:4000/v1/track?number={tracking_number}` and read the JSON
->    response. Extract `status`, `last_location`, and `estimated_delivery` from
->    it. (This is a local mock API — see `api/` and the README to start it.)
+>    response. Extract `status`, `last_location`, and `estimated_delivery`.
 >
-> 3. **Branch on the fetch result itself** (handle failure first):
->    - If the fetch fails, times out, or returns a non-200 / empty response →
->      go to a step that asks the customer to re-check the tracking number and
->      ends the flow gracefully.
->    - If the response says the tracking number is **not found / invalid** →
->      tell the customer it isn't recognized yet and end.
->    - Otherwise continue to the status branch below.
+> 4. **Classify the fetch result** into an `outcome` for this item (handle
+>    failures first):
+>    - Fetch fails, times out, or returns a non-200 / empty response →
+>      `outcome = "error"`.
+>    - Response says the tracking number is **not found / invalid** →
+>      `outcome = "not_found"`.
+>    - `status` is **delivered** → `outcome = "delivered"`.
+>    - `status` is **out for delivery** → `outcome = "out_for_delivery"`.
+>    - `status` is **in transit** AND `estimated_delivery` is **more than 7 days
+>      away** → `outcome = "delayed"`.
+>    - `status` is **in transit** (and not delayed) → `outcome = "in_transit"`.
+>    - `status` is **exception / returned / lost** → `outcome = "escalate"`.
+>    - Any unrecognized status → treat it as `outcome = "in_transit"` (sensible
+>      default).
 >
-> 4. **Branch on `status` (multiple conditions):**
->    - If `status` is **delivered** → confirm delivery to the customer with the
->      delivery location and stop.
->    - If `status` is **out for delivery** → tell the customer it arrives today
->      and show `estimated_delivery`.
->    - If `status` is **in transit** AND `estimated_delivery` is **more than 7
->      days away** → flag it as delayed, then go to the escalation step.
->    - If `status` is **in transit** (and not delayed) → give a normal in-transit
->      update with `last_location` and `estimated_delivery`.
->    - If `status` is **exception / returned / lost** → go straight to the
->      escalation step.
+> 5. **Record the result.** For each tracking number, append a record holding:
+>    `tracking_number`, `outcome`, `status`, `last_location`,
+>    `estimated_delivery`, and a short human-readable `note`. For `delayed` and
+>    `escalate` outcomes, also set `needs_attention: true`.
 >
-> 5. **Escalation step (agent action).** Open a support ticket summarizing the
->    tracking number, current status, and reason, and tell the customer a human
->    will follow up.
+> 6. **Save the results file.** After every tracking number has been processed,
+>    write the full list of result records as JSON to
+>    **`tracking-status-<current_date>.json`** (e.g.
+>    `tracking-status-2026-06-21.json`, using today's date in `YYYY-MM-DD`).
+>    Include a small summary at the top: total processed and a count per
+>    `outcome`. Then end the flow.
 >
-> 6. **Satisfaction check (question + condition).** After any customer-facing
->    update (except the hard failures in step 3), ask the customer "Does this
->    answer your question?"
->    - If **no** → route to the escalation step.
->    - If **yes** → end the flow.
->
-> Keep the carrier base URL and the 7-day delay threshold easy to change. Make
-> the failure/exception paths terminal so the flow never loops, and make sure
-> every status value has a branch (use a sensible default for anything
-> unrecognized — treat unknown statuses as in-transit updates).
+> Keep the carrier API host (`http://localhost:4000/v1`), the input file name,
+> and the 7-day delay threshold easy to change. The loop must continue past
+> individual failures — one bad tracking number should produce an `error` /
+> `not_found` record, never stop the batch.
 
 ---
 
 ### Notes for whoever runs the prompt
 
-- This exercises a **web fetch** (`agentAction` that retrieves a URL and parses
-  JSON), **nested conditions** (status + delay window together), and a
-  **question step** whose answer drives branching.
-- The fetch-result branch is intentionally checked **before** the status branch
-  so network/lookup failures never fall through into the happy path.
-- Inputs (`tracking_number`, `email`) and extracted fields (`status`,
-  `last_location`, `estimated_delivery`) become workflow variables during build.
+- This exercises **file input** (read many IDs from a text file), a **loop**
+  over the list, a **web fetch** per item (`agentAction` that retrieves a URL
+  and parses JSON), **nested conditions** (status + delay window together), and
+  **file output** (one dated JSON results file).
+- The fetch-result classification is intentionally checked **before** the status
+  classification so network/lookup failures never fall through into the happy
+  path.
+- A sample input file is provided at
+  [tracking-ids.txt](tracking-ids.txt) — its prefixes (e.g. `DLV…`, `DLY…`,
+  `FAIL…`) drive the mock API down each branch. See the README for the full
+  prefix table.

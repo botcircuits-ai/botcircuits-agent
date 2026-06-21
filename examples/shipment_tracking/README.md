@@ -12,6 +12,7 @@ the workflow can be exercised.
 | Path | What it is |
 |------|------------|
 | [instructions.md](instructions.md) | The natural-language prompt you paste into the `botcircuits-workflow-authoring` skill to generate the workflow. |
+| [tracking-ids.txt](tracking-ids.txt) | Sample batch input — one tracking number per line, covering every branch. |
 | [api/server.js](api/server.js) | Zero-dependency Node.js mock carrier tracking API. |
 | [api/package.json](api/package.json) | `npm start` runner for the mock API. |
 
@@ -70,7 +71,13 @@ curl "http://localhost:4000/v1/track?number=ZZZ0001"   # 404 not found
 
 With the API running, paste the prompt in [instructions.md](instructions.md)
 into the `botcircuits-workflow-authoring` skill. It generates the
-`shipment_tracking` workflow, which fetches
-`http://localhost:4000/v1/track?number={tracking_number}` and branches on the
-result. Build it, then run it (workflow-running skill) using the tracking
-numbers above to walk each path.
+`shipment_tracking` workflow, which:
+
+1. reads tracking numbers from [tracking-ids.txt](tracking-ids.txt) (one per line),
+2. fetches `http://localhost:4000/v1/track?number={tracking_number}` for each,
+3. classifies every parcel using the branches above, and
+4. writes all results to `tracking-status-<current_date>.json`
+   (e.g. `tracking-status-2026-06-21.json`) with a per-outcome summary.
+
+Build it, then run it (workflow-running skill). The sample input file mixes the
+prefixes from the table above so a single run walks every path.
