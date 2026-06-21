@@ -63,9 +63,20 @@ def _read_items(spec: dict, base: Path) -> list[dict] | None:
     if not isinstance(f, str):
         return None
     try:
-        data = json.loads((base / f).read_text())
+        raw = (base / f).read_text()
     except Exception:
         return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        # Not JSON: treat as a plain one-item-per-line text file (the SKILL's
+        # documented `path: ""` source — e.g. a tracking-ids.txt of one id per
+        # line). Each non-empty line becomes an item dict carrying the line under
+        # `value`, so an itemFacts `command` can interpolate `{value}` and
+        # `derive` can read it via `{"from_item": "value"}`. Without this a text
+        # source returned None and the listDecision silently fell back to the
+        # non-deterministic model path.
+        return [{"value": ln.strip()} for ln in raw.splitlines() if ln.strip()]
     path = src.get("path")
     cur = data
     if path:

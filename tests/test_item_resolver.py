@@ -124,6 +124,39 @@ def test_itemsource_without_itemfacts_projects_fields(tmp_path: Path):
     ]
 
 
+def test_plain_text_item_source_one_per_line(tmp_path: Path):
+    """A non-JSON `itemSource` file is read as one item per line (the SKILL's
+    documented `path: ""` plain-text source). Each line becomes an item dict
+    under `value`, so an exec `command` can interpolate `{value}` — without this
+    a .txt source returned None and the listDecision fell back to the model."""
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "look.py").write_text(
+        "import sys, json\n"
+        "print(json.dumps({'status': 'delivered' if sys.argv[1].startswith('DLV') "
+        "else 'in transit'}))\n"
+    )
+    (tmp_path / "ids.txt").write_text("DLV0001\n  \nTRN0003\n")  # blank line ignored
+    step = {
+        "type": "listDecision",
+        "itemSource": {"file": "ids.txt", "path": ""},
+        "itemFacts": {
+            "kind": "exec",
+            "command": ["python3", "bin/look.py", "{value}"],
+            "parse": "json",
+            "derive": {
+                "tracking_number": {"from_item": "value"},
+                "status": {"from_output": "status"},
+            },
+        },
+        "decisionKey": "decision",
+    }
+    facts = resolve_item_facts(step, base_dir=tmp_path)
+    assert facts == [
+        {"tracking_number": "DLV0001", "status": "delivered"},
+        {"tracking_number": "TRN0003", "status": "in transit"},
+    ]
+
+
 def test_missing_order_file_returns_none(tmp_path: Path):
     _pricer(tmp_path)
     assert resolve_item_facts(_step(), base_dir=tmp_path) is None
