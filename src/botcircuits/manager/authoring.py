@@ -126,7 +126,64 @@ async def author_stream(instruction: str, name: str) -> AsyncIterator[str]:
 
     ok = proc.returncode == 0
     doc = wf_store.get_workflow(name)
-    yield _sse("done", {"ok": ok and doc is not None, "name": name, "workflow": doc})
+    built = bool(doc) and wf_store.is_built(name)
+    yield _sse(
+        "done",
+        {"ok": ok and doc is not None, "name": name, "workflow": doc, "built": built},
+    )
 
 
-__all__ = ["author_stream"]
+async def run_stream(name: str, reply: str | None = None) -> AsyncIterator[str]:
+    """Run a built workflow through the deterministic engine and yield SSE.
+
+    Mirrors the ``botcircuits workflow run`` CLI outcome contract, but in-process
+    so the manager web's AI chat can run a workflow conversationally. Pause state
+    is persisted by the engine to ``.botcircuits/workflows/.runs/<name>.json``,
+    so a ``paused`` outcome can be resumed by a follow-up call carrying ``reply``.
+
+    Emits:
+      - ``start``   {name}
+      - ``result``  {status, message?, question?}   status in success|failure|paused
+      - ``error``   {message}                        could not start the run
+    """
+    if not wf_store.is_valid_name(name):
+        yield _sse("error", {"message": f"invalid workflow name {name!r}"})
+        return
+    if not wf_store.get_workflow(name):
+        yield _sse("error", {"message": f"workflow {name!r} not found"})
+        return
+    if not wf_store.is_built(name):
+        yield _sse(
+            "error",
+            {
+                "message": (
+                    f"workflow {name!r} is not built yet — build it first, then run."
+                )
+            },
+        )
+        return
+
+    yield _sse("start", {"name": name})
+
+    from botcircuits.runtime.run_workflow import _run
+    from botcircuits.agent.workflow.local import LocalWorkflowError
+
+    try:
+        result = await _run(name, initial_args={}, runtime_name=None, reply=reply)
+    except LocalWorkflowError as e:
+        yield _sse("result", {"status": "failure", "message": str(e)})
+        return
+    except Exception as e:  # defensive: surface as a failure, don't crash the stream
+        yield _sse("result", {"status": "failure", "message": f"{type(e).__name__}: {e}"})
+        return
+
+    status = result.get("status")
+    if status == "paused":
+        yield _sse("result", {"status": "paused", "question": result.get("question") or ""})
+    elif status == "done":
+        yield _sse("result", {"status": "success", "message": result.get("summary") or ""})
+    else:
+        yield _sse("result", {"status": "failure", "message": result.get("error") or "workflow run failed"})
+
+
+__all__ = ["author_stream", "run_stream"]

@@ -138,6 +138,12 @@ def save_workflow(name: str, doc: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def is_built(name: str) -> bool:
+    """Whether a runnable ``.build/<name>.json`` copy exists for ``name``."""
+    _require_name(name)
+    return (_resolve_build_dir() / f"{name}.json").exists()
+
+
 def delete_workflow(name: str) -> bool:
     """Delete the source file and any built copy. Returns False if no source."""
     _require_name(name)

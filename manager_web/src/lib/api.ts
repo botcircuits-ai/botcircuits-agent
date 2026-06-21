@@ -211,4 +211,12 @@ export const api = {
     const q = new URLSearchParams({ name, instruction, token });
     return `${API_BASE}/api/workflows/author/stream?${q.toString()}`;
   },
+
+  /** URL for the run SSE stream. Pass `reply` to resume a paused run with the
+   * user's answer. Token passed as query — EventSource can't set headers. */
+  runStreamUrl: (token: string, name: string, reply?: string) => {
+    const q = new URLSearchParams({ name, token });
+    if (reply) q.set("reply", reply);
+    return `${API_BASE}/api/workflows/run/stream?${q.toString()}`;
+  },
 };

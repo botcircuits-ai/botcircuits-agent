@@ -157,6 +157,24 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/api/workflows/run/stream")
+    def run_workflow_stream(
+        name: str,
+        token: str,
+        reply: str | None = None,
+    ) -> StreamingResponse:
+        # EventSource can't set an Authorization header, so this endpoint
+        # takes the bearer token as a query param and verifies it manually.
+        try:
+            auth.verify(token)
+        except auth.AuthError as e:
+            raise HTTPException(status_code=401, detail=str(e)) from e
+        return StreamingResponse(
+            authoring.run_stream(name, reply),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return app
 
 
