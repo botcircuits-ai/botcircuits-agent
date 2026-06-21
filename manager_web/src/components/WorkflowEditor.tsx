@@ -357,7 +357,7 @@ export function WorkflowEditor({
   }, [token, nameValid, name, save, signOut]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3rem)]">
+    <div className="flex flex-col h-[calc(100vh-7rem)]">
       {/* Header / toolbar — sticky so it stays visible while editing. */}
       <div className="sticky top-0 z-20 shrink-0 bg-bg/95 backdrop-blur border-b border-border pb-3">
         <Link
@@ -472,7 +472,7 @@ export function WorkflowEditor({
         </div>
 
         {showChat && (
-          <div className="w-[360px] shrink-0">
+          <div className="w-[360px] shrink-0 h-full min-h-0">
             <AuthoringChat name={name} onWorkflow={onAuthored} />
           </div>
         )}
