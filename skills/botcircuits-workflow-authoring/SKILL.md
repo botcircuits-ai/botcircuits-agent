@@ -11,6 +11,14 @@ workflow. A workflow is a deterministic state machine the **workflow-running**
 skill later executes; authoring is generation + validation, performed by you in
 this session.
 
+> **Use ONLY this skill. Do NOT read the BotCircuits sources (`src/`, `tests/`) to author
+> a workflow.** Everything you need — the file shape, every step type, the
+> `listDecision` wiring, and the build command — is documented below. Reading the
+> engine/builder/validator code to "check how it works" wastes tokens and is not
+> required; this document is the contract. (You still read the *user's* data
+> files — e.g. an `itemSource` file — to validate references, just not the
+> framework internals.)
+
 ## Steps
 
 1. **Clarify if needed.** If scope, inputs, or branching is ambiguous, ask ONE
@@ -35,23 +43,29 @@ this session.
 
 ## Workflow shape
 
+The `start` and `steps` live under a **`flow`** wrapper. `botcircuits workflow
+build` reads `record.flow`; a file with `start`/`steps` at the top level fails
+with `missing flow; nothing to index`.
+
 ```json
 {
   "name": "order_fulfillment",
   "description": "when to run this workflow",
-  "start": "start",
-  "steps": {
-    "start": { "type": "start", "next": "check_stock" },
-    "check_stock": {
-      "type": "agentAction",
-      "settings": { "action": "Check stock for the order items." },
-      "next": "backorder",
-      "conditions": [
-        { "condition": "all items are in stock", "next": "ship" }
-      ]
-    },
-    "ship":      { "type": "agentAction", "settings": { "action": "Ship the order." } },
-    "backorder": { "type": "agentAction", "settings": { "action": "Create a backorder and notify the customer." } }
+  "flow": {
+    "start": "start",
+    "steps": {
+      "start": { "type": "start", "next": "check_stock" },
+      "check_stock": {
+        "type": "agentAction",
+        "settings": { "action": "Check stock for the order items." },
+        "next": "backorder",
+        "conditions": [
+          { "condition": "all items are in stock", "next": "ship" }
+        ]
+      },
+      "ship":      { "type": "agentAction", "settings": { "action": "Ship the order." } },
+      "backorder": { "type": "agentAction", "settings": { "action": "Create a backorder and notify the customer." } }
+    }
   }
 }
 ```
@@ -98,23 +112,55 @@ fulfilling an order's line items (one decision per item against stock):
     { "condition": "the sku is not in stock",       "next": "reject" },
     { "condition": "in stock but not enough for qty", "next": "backorder" }
   ],
-  "next": "fulfill"
+  "defaultNext": "fulfill",
+  "next": "save_results"
 }
 ```
 
 `listDecision` rules:
-- **Each `conditions[].next` (and the step's default `next`) is a DECISION WORD
-  for the item** (`reject`, `backorder`, `fulfill`), **NOT** the id of another
-  step. The step itself navigates to ONE next step after the whole list is
-  decided — wire that via `decisionKey`/`collectInto`, then a following normal
-  step (e.g. `save_results`).
-- `itemSource` `{file, path}` points at the list (`path` is a JSON path into the
-  file — e.g. `"items"` — or `""` for a plain one-item-per-line text file).
-  `itemVariables` are the per-item facts the `conditions` test.
+- **`conditions[].next` and `defaultNext` are DECISION WORDS for the item**
+  (`reject`, `backorder`, `fulfill`), **NOT** step ids. `defaultNext` is the
+  fallback decision word for an item that matches no condition. The first
+  matching condition wins (top-to-bottom), so order them — put failure / error
+  checks first.
+- **`next` is the real STEP the flow continues to after the WHOLE list is
+  decided** (e.g. `save_results`), or omit it to make the `listDecision`
+  terminal. This is the one place `next` is a step id rather than a decision
+  word — that is why the default decision word goes in `defaultNext`, not `next`.
+- **One condition → one comparison. Do NOT write OR-conditions.** A condition
+  like `"status is exception or returned or lost"` compiles to a SINGLE branch
+  (only `exception` matches) and silently drops the rest. Write three separate
+  entries, each pointing at the same decision word:
+  `{"condition": "status is exception", "next": "escalate"}`,
+  `{"condition": "status is returned", "next": "escalate"}`,
+  `{"condition": "status is lost", "next": "escalate"}`.
+- `itemSource` `{file, path}` points at the list. `path` is a JSON path into the
+  file (e.g. `"items"`), OR `""` for a plain **one-item-per-line text file** — in
+  that case each line becomes an item `{"value": "<line>"}`, so an `itemFacts`
+  `command` interpolates the line as `{value}` and `derive` reads it via
+  `{"from_item": "value"}`. `itemVariables` are the per-item facts the
+  `conditions` test.
 - If each item's facts come from running a script/HTTP-style lookup
   **deterministically**, add `itemFacts` (kind `exec`) so the ENGINE gathers
   them per item with NO AI call. Omit it to have the model report the per-item
-  facts in one call. Prefer deterministic where possible.
+  facts in one call. Prefer deterministic where possible. Shape:
+  ```json
+  "itemFacts": {
+    "kind": "exec",
+    "command": ["python3", "bin/lookup.py", "{value}"],
+    "parse": "json",
+    "derive": {
+      "tracking_number": { "from_output": "tracking_number" },
+      "status":          { "from_output": "status" },
+      "failed":          { "from_output": "failed", "default": false }
+    }
+  }
+  ```
+  `derive` rules (tiny by design): `{"from_item": "k"}` (item field),
+  `{"from_output": "k", "default": d}` (parsed-stdout field), `{"literal": v}`,
+  `{"ge": [a, b]}` (numeric `a >= b`, where a/b are `"item.x"`/`"output.y"` refs
+  or literals). The script should emit ONE flat JSON object per item; compute
+  anything non-trivial (date math, failure flags) inside the script.
 - `collectInto` names the slot that receives the list of decided records;
   `decisionKey` names the field on each record holding its decision word.
   Optionally `nullOn` `{field: [decisionWords]}` blanks a field for some
@@ -127,6 +173,6 @@ like any other step.
 ## Editing
 
 To change an existing workflow, read its raw
-`.botcircuits/workflows/<name>.json`, apply the change to the full `steps` map,
-overwrite the file (keep the same `name`), then rebuild. The build always
-replaces the file whole.
+`.botcircuits/workflows/<name>.json`, apply the change to the full `flow.steps`
+map, overwrite the file (keep the same `name` and the `flow` wrapper), then
+rebuild. The build always replaces the built copy whole.
