@@ -360,12 +360,31 @@ export function WorkflowEditor({
     <div className="flex flex-col h-[calc(100vh-7rem)]">
       {/* Header / toolbar — sticky so it stays visible while editing. */}
       <div className="sticky top-0 z-20 shrink-0 bg-bg/95 backdrop-blur border-b border-border pb-3">
-        <Link
-          href="/workflows"
-          className="text-sm text-muted hover:text-fg inline-flex items-center gap-1 mb-2"
-        >
-          ← Workflows
-        </Link>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <Link
+            href="/workflows"
+            className="text-sm text-muted hover:text-fg inline-flex items-center gap-1"
+          >
+            ← Workflows
+          </Link>
+          <Link
+            href={name ? `/tracing?workflow=${encodeURIComponent(name)}` : "/tracing"}
+            className="text-sm text-muted hover:text-fg inline-flex items-center gap-1"
+          >
+            View traces →
+          </Link>
+        </div>
+        <p className="text-sm text-muted mb-3">
+          Design your workflow as a flow of steps and branches, then save &amp;
+          build to make it runnable. Inspect past runs in{" "}
+          <Link
+            href={name ? `/tracing?workflow=${encodeURIComponent(name)}` : "/tracing"}
+            className="text-fg underline hover:text-brand-400"
+          >
+            tracing
+          </Link>
+          .
+        </p>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <WorkflowIcon className="w-5 h-5 text-brand-600 dark:text-brand-400 shrink-0" />

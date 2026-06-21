@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshButton } from "@/components/RefreshButton";
 import { RequireAuth } from "@/components/RequireAuth";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -21,8 +21,15 @@ export default function TracingPage() {
 function TracingList() {
   const { token, signOut } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const workflowFilter = searchParams.get("workflow");
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const visibleSessions = useMemo(() => {
+    if (!sessions || !workflowFilter) return sessions;
+    return sessions.filter((s) => s.workflow === workflowFilter);
+  }, [sessions, workflowFilter]);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -48,6 +55,16 @@ function TracingList() {
             Workflow execution sessions. Click a session to view its trace and
             memory flow.
           </p>
+          {workflowFilter && (
+            <div className="mt-2 inline-flex items-center gap-2 text-sm">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-elevated px-2.5 py-0.5 text-xs text-fg">
+                workflow: <span className="font-mono">{workflowFilter}</span>
+              </span>
+              <Link href="/tracing" className="text-muted hover:text-fg underline">
+                clear
+              </Link>
+            </div>
+          )}
         </div>
         <RefreshButton onRefresh={load} />
       </div>
@@ -62,9 +79,11 @@ function TracingList() {
         <div className="text-sm text-muted">Loading sessions…</div>
       )}
 
-      {!error && sessions?.length === 0 && (
+      {!error && visibleSessions?.length === 0 && (
         <div className="rounded-2xl border border-dashed border-border bg-surface p-10 text-center">
-          <p className="text-fg font-medium">No sessions yet</p>
+          <p className="text-fg font-medium">
+            {workflowFilter ? "No sessions for this workflow" : "No sessions yet"}
+          </p>
           <p className="text-sm text-muted mt-1">
             Run a workflow (<code className="font-mono">botcircuits workflow run</code>)
             and its trace will appear here.
@@ -72,7 +91,7 @@ function TracingList() {
         </div>
       )}
 
-      {sessions && sessions.length > 0 && (
+      {visibleSessions && visibleSessions.length > 0 && (
         <div className="overflow-hidden rounded-2xl border border-border bg-surface">
           <table className="w-full text-sm">
             <thead className="text-muted text-xs uppercase tracking-wide bg-elevated/50">
@@ -87,7 +106,7 @@ function TracingList() {
               </tr>
             </thead>
             <tbody>
-              {sessions.map((s) => (
+              {visibleSessions.map((s) => (
                 <tr
                   key={s.session_id}
                   onClick={() => router.push(`/tracing/${s.session_id}`)}

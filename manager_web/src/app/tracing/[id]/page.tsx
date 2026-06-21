@@ -83,7 +83,17 @@ function SessionDetail() {
             <code className="font-mono text-xs">{doc.session_id}</code>
           </div>
         </div>
-        <RefreshButton onRefresh={load} />
+        <div className="flex items-center gap-2 shrink-0">
+          {doc.workflow.name && (
+            <Link
+              href={`/workflows/${encodeURIComponent(doc.workflow.name)}`}
+              className="inline-flex items-center gap-1 h-9 px-3 rounded-lg text-sm font-medium border border-border text-fg hover:bg-elevated"
+            >
+              Open in editor →
+            </Link>
+          )}
+          <RefreshButton onRefresh={load} />
+        </div>
       </div>
 
       {/* meta strip */}
