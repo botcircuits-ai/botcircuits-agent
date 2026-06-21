@@ -48,6 +48,9 @@ export function AuthoringChat({
   const { token } = useAuth();
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
+  // True while the agent is authoring/building (drives the page glow). Run
+  // activity sets `running` but not this, so the glow is build-only.
+  const [authoring, setAuthoring] = useState(false);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   // When a run pauses on a question, the next user message is its reply.
   const [awaitingReply, setAwaitingReply] = useState(false);
@@ -91,6 +94,7 @@ export function AuthoringChat({
   const startAuthoring = useCallback(
     (instruction: string) => {
       if (!token) return;
+      setAuthoring(true);
       const es = new EventSource(api.authorStreamUrl(token, name, instruction));
       esRef.current = es;
 
@@ -114,6 +118,7 @@ export function AuthoringChat({
         }
         finishAssistant("⚠ " + msg, false);
         setRunning(false);
+        setAuthoring(false);
         es.close();
       });
       es.addEventListener("done", (e) => {
@@ -134,6 +139,7 @@ export function AuthoringChat({
           finishAssistant("⚠ Finished, but no workflow file was produced.", false);
         }
         setRunning(false);
+        setAuthoring(false);
         es.close();
       });
     },
@@ -209,6 +215,8 @@ export function AuthoringChat({
 
   return (
     <div className="flex flex-col h-full border-l border-border bg-surface">
+      {/* Page-wide green glow ring while the agent builds the workflow. */}
+      {authoring && <div className="ai-glow-overlay" aria-hidden />}
       <div className="h-12 shrink-0 flex items-center gap-2 px-4 border-b border-border">
         <SparkleIcon className="w-[18px] h-[18px] text-brand-600 dark:text-brand-400" />
         <span className="text-sm font-medium text-fg">Author & run with AI</span>
