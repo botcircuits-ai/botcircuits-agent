@@ -226,3 +226,65 @@ def test_data_variable_reported_slot_is_captured(tmp_path):
     ))
     assert res.captured_slots["scraped_jobs"] == '[{"t":"SWE"}]'
     assert res.captured_slots["job_count"] == 3
+
+
+def test_carried_data_value_injected_into_prompt(tmp_path):
+    # A fake CLI that echoes the PROMPT it received (the -p arg) back inside
+    # the JSON `text`, so we can assert the carried data value reached it.
+    script = tmp_path / "echoprompt"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, json\n"
+        "# argv: -p <prompt> --output-format json ...\n"
+        "prompt = sys.argv[2] if len(sys.argv) > 2 else ''\n"
+        "print(json.dumps({'slots': {}, 'text': prompt}))\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    rt = ClaudeCodeRuntime(RuntimeConfig(
+        name="claude-code",
+        command=[str(script), "-p", "{prompt}", "--output-format", "json"],
+        timeout=30.0,
+    ))
+    res = asyncio.run(rt.run_segment(
+        actions=["Print tasks_data and write it to a file"],
+        branch_variables=[],
+        system_notes=[],
+        slots={"tasks_data": '[{"title":"Test 1","id":"1"}]', "task_count": 1},
+        data_variables=[
+            {"variableName": "tasks_data", "dataType": "string"},
+            {"variableName": "created_task", "dataType": "string"},
+        ],
+    ))
+    # The carried value is surfaced under AVAILABLE DATA so the stateless
+    # segment can act on it.
+    assert "AVAILABLE DATA" in res.text
+    assert "Test 1" in res.text
+    # A data var with no value yet (created_task) is NOT listed as available
+    # (it may still appear in the report-schema, but not as an available value).
+    available_block = res.text.split("AVAILABLE DATA", 1)[1]
+    assert "created_task" not in available_block
+    assert "tasks_data" in available_block
+
+
+def test_no_available_data_block_when_data_slots_empty(tmp_path):
+    script = tmp_path / "echoprompt2"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, json\n"
+        "prompt = sys.argv[2] if len(sys.argv) > 2 else ''\n"
+        "print(json.dumps({'slots': {}, 'text': prompt}))\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    rt = ClaudeCodeRuntime(RuntimeConfig(
+        name="claude-code",
+        command=[str(script), "-p", "{prompt}", "--output-format", "json"],
+        timeout=30.0,
+    ))
+    res = asyncio.run(rt.run_segment(
+        actions=["fetch the tasks"],
+        branch_variables=[{"variableName": "task_count", "dataType": "number"}],
+        system_notes=[],
+        slots={},  # nothing produced yet
+        data_variables=[{"variableName": "tasks_data", "dataType": "string"}],
+    ))
+    assert "AVAILABLE DATA" not in res.text

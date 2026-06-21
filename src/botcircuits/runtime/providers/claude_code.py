@@ -136,6 +136,27 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
         last_user = ""
         if isinstance(slots, dict):
             last_user = str(slots.get("__last_user_message__") or "")
+
+        # Carried key-value memory: a prior segment may have produced data
+        # variables (e.g. `tasks_data`) now sitting in `slots`. Because each
+        # segment is a FRESH process with no history, the agent can't see them
+        # unless we hand the VALUES over here — without this, a "print/save the
+        # fetched data" step has nothing to act on and stalls. Surface only the
+        # data variables in scope that actually have a value.
+        memory_block = ""
+        if isinstance(slots, dict) and data_variables:
+            available = {}
+            for v in data_variables:
+                name = v.get("variableName") if isinstance(v, dict) else None
+                if isinstance(name, str) and slots.get(name) not in (None, ""):
+                    available[name] = slots[name]
+            if available:
+                memory_block = (
+                    "\n\nAVAILABLE DATA (produced by earlier steps — use these "
+                    "values directly; do NOT re-fetch or claim they are "
+                    "missing):\n"
+                    + json.dumps(available, ensure_ascii=False, default=str)
+                )
         # On resume, the action text still reads as an instruction to ASK (e.g.
         # "Ask: check another order?"), but the user has ALREADY answered — their
         # reply is here. Without explicit guidance the agent re-asks and pauses
@@ -156,6 +177,7 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
             + _CLI_OUTPUT_CONTRACT
             + "\n\n=== SEGMENT ===\n"
             + user_msg
+            + memory_block
             + context_block
         )
 
