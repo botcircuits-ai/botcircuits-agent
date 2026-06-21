@@ -1,0 +1,101 @@
+{
+  "name": "shipment_tracking",
+  "description": "Batch-checks the live carrier status of many parcels. Reads tracking numbers (one per line) from a text file, fetches each parcel's status from the carrier API, classifies the outcome, and writes one dated JSON results file with a per-outcome summary. Configurables: carrier API host http://localhost:4000/v1, input file tracking-ids.txt, delay threshold 7 days.",
+  "flow": {
+    "start": "start",
+    "steps": {
+      "start": {
+        "type": "start",
+        "next": "read_file"
+      },
+      "read_file": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Read the plain-text file at the path given by the `tracking_file` input (default `tracking-ids.txt`). Split it into lines, trim whitespace from each line, and drop blank lines. Store the cleaned values as the list `tracking_numbers` to process, and initialize an empty `results` list."
+        },
+        "next": "next_item"
+      },
+      "next_item": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Take the next not-yet-processed tracking number from `tracking_numbers` and set it as the current `tracking_number`. This is an unattended batch run: do not ask the user anything per item."
+        },
+        "next": "fetch_status",
+        "conditions": [
+          { "condition": "every tracking number in the list has already been processed", "next": "save_results" }
+        ]
+      },
+      "fetch_status": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Fetch the carrier status for the current parcel: GET `http://localhost:4000/v1/track?number={tracking_number}` and read the JSON response. Extract `status`, `last_location`, and `estimated_delivery` from the body. Do not stop the batch on failure — capture whatever happened so the next steps can classify it."
+        },
+        "next": "record_in_transit",
+        "conditions": [
+          { "condition": "the fetch failed, timed out, or returned a non-200 status code or an empty response body", "next": "record_error" },
+          { "condition": "the response indicates the tracking number was not found or is invalid", "next": "record_not_found" },
+          { "condition": "the status is delivered", "next": "record_delivered" },
+          { "condition": "the status is out for delivery", "next": "record_out_for_delivery" },
+          { "condition": "the status is in transit and the estimated_delivery date is more than 7 days away", "next": "record_delayed" },
+          { "condition": "the status is in transit", "next": "record_in_transit" },
+          { "condition": "the status is exception, returned, or lost", "next": "record_escalate" }
+        ]
+      },
+      "record_error": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Append a result record for `tracking_number` with: outcome `error`; status, last_location, and estimated_delivery set to whatever is available (or null); and a short human-readable note explaining the carrier fetch failed or returned a bad response."
+        },
+        "next": "next_item"
+      },
+      "record_not_found": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Append a result record for `tracking_number` with: outcome `not_found`; status, last_location, and estimated_delivery (or null); and a short note saying the carrier did not recognize this tracking number."
+        },
+        "next": "next_item"
+      },
+      "record_delivered": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Append a result record for `tracking_number` with: outcome `delivered`; the fetched status, last_location, and estimated_delivery; and a short note confirming the parcel was delivered."
+        },
+        "next": "next_item"
+      },
+      "record_out_for_delivery": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Append a result record for `tracking_number` with: outcome `out_for_delivery`; the fetched status, last_location, and estimated_delivery; and a short note saying the parcel is out for delivery / arriving today."
+        },
+        "next": "next_item"
+      },
+      "record_delayed": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Append a result record for `tracking_number` with: outcome `delayed`; needs_attention set to true; the fetched status, last_location, and estimated_delivery; and a short note that the parcel is in transit but its ETA is more than 7 days away."
+        },
+        "next": "next_item"
+      },
+      "record_in_transit": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Append a result record for `tracking_number` with: outcome `in_transit`; the fetched status, last_location, and estimated_delivery; and a short note describing normal in-transit progress. (This is also the default for any unrecognized status.)"
+        },
+        "next": "next_item"
+      },
+      "record_escalate": {
+        "type": "agentAction",
+        "settings": {
+          "action": "Append a result record for `tracking_number` with: outcome `escalate`; needs_attention set to true; the fetched status, last_location, and estimated_delivery; and a short note that the parcel hit an exception / was returned / is lost and needs manual follow-up."
+        },
+        "next": "next_item"
+      },
+      "save_results": {
+        "type": "agentAction",
+        "settings": {
+          "action": "All tracking numbers have been processed. Write the full `results` list as JSON to `tracking-status-<current_date>.json` (use today's date in YYYY-MM-DD, e.g. tracking-status-2026-06-21.json). At the top of the file include a summary object with the total number processed and a count per outcome (delivered, out_for_delivery, in_transit, delayed, escalate, not_found, error). Then end the flow."
+        }
+      }
+    }
+  }
+}

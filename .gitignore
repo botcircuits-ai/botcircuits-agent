@@ -15,7 +15,6 @@ wheels/
 !.env.example
 
 # BotCircuits settings
-.botcircuits/workflows/.build
 .botcircuits/workflows/.runs
 .botcircuits/manager
 .botcircuits/sessions

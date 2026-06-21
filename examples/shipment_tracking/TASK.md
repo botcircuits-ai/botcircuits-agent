@@ -1,15 +1,10 @@
-# Workflow Authoring — Instruction Prompts
-
-These are **natural-language instruction prompts** you can paste to the
-`botcircuits-workflow-authoring` skill. They describe what the workflow should
-do; the skill turns each into a runnable workflow (steps, conditions, build).
-No JSON here — authoring is done separately.
+# Workflow name:  `shipment_tracking`
 
 ---
 
-## Use case: Batch shipment tracking (file in → web fetch → JSON out)
+# Instruction Prompt
 
-> Create a workflow named **`shipment_tracking`** that checks the live status of
+> Create a workflow that checks the live status of
 > **many parcels at once**, reading the tracking numbers from a text file and
 > writing a single results file at the end.
 >
