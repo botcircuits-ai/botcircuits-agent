@@ -59,13 +59,70 @@ this session.
 Rules:
 - Step types: `start` (entry, no action), `agentAction` (the runtime performs
   `settings.action`), `question` (ask the user; `settings.action` is the
-  question), `systemAction` (engine-side bookkeeping, no LLM).
+  question), `systemAction` (engine-side bookkeeping, no LLM), `listDecision`
+  (decide an outcome for **every item in a list** — see below).
 - Branching lives at the **step root** under `conditions` (sibling of
   `type`/`next`/`settings`, NOT inside `settings`). Each entry is
   `{"condition": "<NL test>", "next": "<step_id>"}`. The step's own `next` is
   the default ("otherwise") branch — do NOT add a literal "otherwise" entry.
 - A branching step needs BOTH `conditions` (real branches) AND `next`
   (default). A step with neither is terminal.
+
+## Iterating over a list — use `listDecision`, NOT a self-loop
+
+When the process applies the **same decision to every item in a collection**
+(check each parcel, price each line item, screen each applicant), DO NOT build a
+manual loop (`next_item → do_thing → record → next_item` with an
+LLM-maintained "all processed" flag). That pattern makes the model — not the
+engine — drive iteration: only the few segments the engine sees get traced, the
+per-item work happens inside one LLM call, and the run is neither deterministic
+nor per-item auditable.
+
+Instead use a single **`listDecision`** step. The engine fans the step's
+`conditions` across each element of the list and decides each one
+deterministically, collecting one result record per item. For example,
+fulfilling an order's line items (one decision per item against stock):
+
+```json
+"decide_line_items": {
+  "type": "listDecision",
+  "settings": { "action": "Decide each order line item against available stock." },
+  "itemSource": { "file": "data/current_order.json", "path": "items" },
+  "itemVariables": [
+    { "variableName": "in_stock", "description": "whether the sku is in stock" },
+    { "variableName": "enough", "description": "stock covers the requested qty" }
+  ],
+  "decisionKey": "decision",
+  "collectInto": "line_results",
+  "conditions": [
+    { "condition": "the sku is not in stock",       "next": "reject" },
+    { "condition": "in stock but not enough for qty", "next": "backorder" }
+  ],
+  "next": "fulfill"
+}
+```
+
+`listDecision` rules:
+- **Each `conditions[].next` (and the step's default `next`) is a DECISION WORD
+  for the item** (`reject`, `backorder`, `fulfill`), **NOT** the id of another
+  step. The step itself navigates to ONE next step after the whole list is
+  decided — wire that via `decisionKey`/`collectInto`, then a following normal
+  step (e.g. `save_results`).
+- `itemSource` `{file, path}` points at the list (`path` is a JSON path into the
+  file — e.g. `"items"` — or `""` for a plain one-item-per-line text file).
+  `itemVariables` are the per-item facts the `conditions` test.
+- If each item's facts come from running a script/HTTP-style lookup
+  **deterministically**, add `itemFacts` (kind `exec`) so the ENGINE gathers
+  them per item with NO AI call. Omit it to have the model report the per-item
+  facts in one call. Prefer deterministic where possible.
+- `collectInto` names the slot that receives the list of decided records;
+  `decisionKey` names the field on each record holding its decision word.
+  Optionally `nullOn` `{field: [decisionWords]}` blanks a field for some
+  outcomes (e.g. a rejected line has no total: `{"line_total": ["reject"]}`).
+
+One `listDecision` replaces the entire `next_item`/`do_thing`/`record`/loop-back
+subgraph. The builder compiles its NL `conditions` into rule expressions just
+like any other step.
 
 ## Editing
 
