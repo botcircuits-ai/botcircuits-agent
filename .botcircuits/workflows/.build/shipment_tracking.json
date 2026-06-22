@@ -43,7 +43,7 @@
       "decide_parcels": {
         "type": "listDecision",
         "settings": {
-          "action": "Per tracking number: query carrier API for live status, classify outcome."
+          "action": "For each tracking number, query carrier API for live status; set outcome by classifying it."
         },
         "itemSource": {
           "file": "examples/shipment_tracking/tracking-ids.txt",
@@ -313,7 +313,7 @@
       "save_results": {
         "type": "agentAction",
         "settings": {
-          "action": "Read the decided records in the `tracking_results` slot. Build a results object with a `summary` block at the top — `total` (the number of records) and a `counts` map giving how many records fall under each `outcome` value — followed by `results` (the full list of records, each with tracking_number, outcome, status, last_location, estimated_delivery, note, and needs_attention where set). Write this object as pretty JSON to a file named `tracking-status-<today>.json` in the current working directory, where <today> is today's date in YYYY-MM-DD format (e.g. tracking-status-2026-06-22.json). Do not ask any questions; this is an unattended batch run."
+          "action": "Read records from `tracking_results` slot. Build object: `summary` = { `total` (record count), `counts` (map of outcome value → count) }, then `results` (all records, each with tracking_number, outcome, status, last_location, estimated_delivery, note, and needs_attention where set). Write as pretty JSON to `tracking-status-<today>.json` in cwd, <today>=YYYY-MM-DD (e.g. tracking-status-2026-06-22.json). No questions; unattended."
         }
       }
     },

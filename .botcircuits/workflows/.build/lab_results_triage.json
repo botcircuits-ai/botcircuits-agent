@@ -83,6 +83,41 @@
         "variableName": "attention_count",
         "description": "How many orders need human attention (critical + interaction + review outcomes).",
         "dataType": "number"
+      },
+      {
+        "variableName": "lookup_failed",
+        "dataType": "boolean",
+        "description": "True if the lab/EHR lookup failed, timed out, or returned a non-200 / unreadable response."
+      },
+      {
+        "variableName": "not_found",
+        "dataType": "boolean",
+        "description": "True if the order is not on file in the lab system (HTTP 404)."
+      },
+      {
+        "variableName": "not_resulted",
+        "dataType": "boolean",
+        "description": "True if the panel was ordered but has not yet resulted."
+      },
+      {
+        "variableName": "critical_value",
+        "dataType": "boolean",
+        "description": "True if a critical (panic) value is present on the panel."
+      },
+      {
+        "variableName": "no_episode",
+        "dataType": "boolean",
+        "description": "True if the patient no longer has an active care episode."
+      },
+      {
+        "variableName": "interaction_review",
+        "dataType": "boolean",
+        "description": "True if the panel is abnormal and a drug/allergy interaction applies to the ordered follow-up."
+      },
+      {
+        "variableName": "abnormal",
+        "dataType": "boolean",
+        "description": "True if the panel's abnormal-flag count is at or above the abnormal_flag_threshold."
       }
     ],
     "steps": {
@@ -93,7 +128,7 @@
       "load_protocol": {
         "type": "agentAction",
         "settings": {
-          "action": "read_file `examples/lab_results_triage/config/protocol.json`. Set protocol_id, facility, clia_certificate from same keys; on_call_provider from ordering_provider_oncall; protocol_approved from `approved`; clia_valid from `clia_valid`; abnormal_flag_threshold and min_results_required from same keys. GET `http://localhost:4200/v1/lis-status`; set lis_offline=true when status not `online` or `online` flag false. Unattended; do not ask questions."
+          "action": "read_file `examples/lab_results_triage/config/protocol.json`. Set protocol_id, facility, clia_certificate, on_call_provider (from ordering_provider_oncall), protocol_approved (from `approved`), clia_valid (from `clia_valid`), abnormal_flag_threshold, min_results_required from it. GET `http://localhost:4200/v1/lis-status`; set lis_offline=true when status not `online` or `online` flag false. No questions; unattended batch."
         },
         "next": "decide_orders",
         "conditions": [
@@ -436,7 +471,7 @@
       "tally_results": {
         "type": "agentAction",
         "settings": {
-          "action": "Read `triage_results`. resulted_count = records whose outcome is not `pending`/`error`/`not_found`. critical_count = outcome `critical`. review_queue_count = outcome `review` or `interaction`. attention_count = outcome `critical`/`interaction`/`review`. Do not modify records."
+          "action": "From `triage_results` records (do not modify): resulted_count = count outcome not in (`pending`,`error`,`not_found`); critical_count = count `critical`; review_queue_count = count `review` or `interaction`; attention_count = count `critical`,`interaction`, or `review`."
         },
         "next": "queue_reviews",
         "conditions": [
@@ -479,21 +514,21 @@
       "page_criticals": {
         "type": "agentAction",
         "settings": {
-          "action": "Page on_call_provider for every order with outcome `critical`, listing panel and worst_flag."
+          "action": "Send critical-value page to on_call_provider listing every `critical` outcome order with its panel and worst_flag."
         },
         "next": "escalate_criticals"
       },
       "escalate_criticals": {
         "type": "agentAction",
         "settings": {
-          "action": "For each order with outcome `critical`, open a critical-value escalation to on_call_provider; record order, panel, worst_flag, and that provider was escalated for follow-up. Leave other orders untouched."
+          "action": "For each `critical` outcome order, open critical-value escalation to on_call_provider recording order, panel, worst_flag, and that provider was escalated. Leave others untouched."
         },
         "next": "queue_reviews"
       },
       "queue_reviews": {
         "type": "agentAction",
         "settings": {
-          "action": "Queue provider-review task for each order with outcome `review` or `interaction`. `interaction` → pharmacy + provider; `review` → provider only. Record order, panel, worst_flag, note. Leave routine, pending, no_episode, critical, error, not_found untouched."
+          "action": "Queue provider-review task for each `review` or `interaction` order: route `interaction` to pharmacy + provider, `review` to provider only. Record order, panel, worst_flag, note. Leave routine, pending, no_episode, critical, error, not_found untouched."
         },
         "next": "write_report"
       },
@@ -506,7 +541,7 @@
       "abort_batch": {
         "type": "agentAction",
         "settings": {
-          "action": "Write abort report as pretty JSON to `triage-abort-<today>.json` in cwd (<today>=today YYYY-MM-DD): abort reason, protocol_id and facility if available, and any triage_results collected so far. Unattended; do not ask questions."
+          "action": "Write abort report as pretty JSON to `triage-abort-<today>.json` in cwd (<today>=YYYY-MM-DD) capturing abort reason, protocol_id and facility if available, and any `triage_results` collected. No questions; unattended batch."
         }
       }
     },

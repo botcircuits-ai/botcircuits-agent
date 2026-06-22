@@ -57,7 +57,7 @@
       {
         "variableName": "lookup_failed",
         "dataType": "boolean",
-        "description": "True if the metrics lookup failed, timed out, or returned a non-200 / unreadable response."
+        "description": "True if the service metrics lookup failed, timed out, or returned a non-200/unreadable response."
       },
       {
         "variableName": "not_found",
@@ -98,7 +98,7 @@
       "load_release_manifest": {
         "type": "agentAction",
         "settings": {
-          "action": "read_file `examples/deployment_release_gate/config/release.json`. Extract release_id, target_environment, change_ticket, approved, rollback_plan, error_budget_pct, latency_budget_ms, min_services_required. Set release_approved=approved; rollback_plan_present=true if rollback_plan non-empty; min_services_required from manifest. Verify change_ticket present and rollback_plan documented (pre-flight gate, no deploy). GET `http://localhost:4100/v1/freeze`; set freeze_active from response `freeze_active`. Unattended; no questions."
+          "action": "Unattended; do not ask questions. read_file `examples/deployment_release_gate/config/release.json`; extract release_id, target_environment, change_ticket, approved, rollback_plan, error_budget_pct, latency_budget_ms, min_services_required. Set release_approved=approved; rollback_plan_present=true if rollback_plan non-empty; min_services_required from manifest. Verify change_ticket present and rollback_plan documented (pre-flight only, no deploy). GET `http://localhost:4100/v1/freeze`; set freeze_active from response `freeze_active`."
         },
         "next": "gate_services",
         "conditions": [
@@ -147,7 +147,7 @@
       "gate_services": {
         "type": "listDecision",
         "settings": {
-          "action": "For each microservice, pull CI/health/incident metrics from the DevOps API and classify a release-gate outcome."
+          "action": "For each microservice, fetch CI/health/incident metrics from the DevOps API and classify a release-gate outcome."
         },
         "itemSource": {
           "file": "examples/deployment_release_gate/services.txt",
@@ -423,7 +423,7 @@
       "tally_results": {
         "type": "agentAction",
         "settings": {
-          "action": "From `gate_results` records (no edits): promotable_count=count outcome in `promote`,`canary`; canary_count=count `canary`; blocker_count=count outcome in `block`,`hold`,`error`,`not_found`."
+          "action": "From `gate_results` records (do not modify): set promotable_count = count of outcome in {promote,canary}; canary_count = count of outcome canary; blocker_count = count of outcome in {block,hold,error,not_found}."
         },
         "next": "promote_services",
         "conditions": [
@@ -466,14 +466,14 @@
       "notify_blockers": {
         "type": "agentAction",
         "settings": {
-          "action": "Compose on-call notification listing each service with outcome block/hold/error/not_found plus its note; page on-call for any service with an open SEV incident."
+          "action": "Compose on-call channel notification listing each service with outcome block/hold/error/not_found and its note; page on-call for any service with an open SEV incident."
         },
         "next": "promote_services"
       },
       "promote_services": {
         "type": "agentAction",
         "settings": {
-          "action": "Promote every `promote`-outcome service to target_environment via blue/green; record promoted services. Leave canary/hold/block/error/not_found untouched."
+          "action": "Promote each service with outcome `promote` to target_environment via blue/green strategy; record promoted services. Leave canary/hold/block/error/not_found untouched."
         },
         "next": "write_report",
         "conditions": [
@@ -500,20 +500,20 @@
       "canary_rollout": {
         "type": "agentAction",
         "settings": {
-          "action": "For every `canary`-outcome service: route a small traffic percentage, record canary started. Do not full-promote."
+          "action": "For each service with outcome `canary` (first-time, no baseline): route a small traffic percentage, record canary started. Do not full-promote."
         },
         "next": "write_report"
       },
       "write_report": {
         "type": "agentAction",
         "settings": {
-          "action": "Build report object: `summary`={release_id, target_environment (from manifest), total=number of gate records, promotable=promotable_count, canaried=canary_count, blocked=blocker_count, counts=map of record count per `outcome`}, then `results`=full `gate_results` list (each: service, outcome, error_rate, p95_latency_ms, open_sev_incidents, note, needs_attention where set). Write as pretty JSON to `release-report-<today>.json` in cwd (<today>=YYYY-MM-DD, e.g. release-report-2026-06-22.json). Unattended; no questions."
+          "action": "Unattended; do not ask questions. Build report object: top `summary` block with release_id, target_environment (from manifest), `total` (count of gate records), `promotable` (promotable_count), `canaried` (canary_count), `blocked` (blocker_count), and `counts` map of records per `outcome` value; then `results` = full `gate_results` list (each: service, outcome, error_rate, p95_latency_ms, open_sev_incidents, note, needs_attention where set). Write as pretty JSON to `release-report-<today>.json` in cwd (<today>=today YYYY-MM-DD, e.g. release-report-2026-06-22.json)."
         }
       },
       "abort_release": {
         "type": "agentAction",
         "settings": {
-          "action": "Write abort report as pretty JSON to `release-abort-<today>.json` in cwd (<today>=YYYY-MM-DD): abort reason, release_id and target_environment (from manifest if available), and any gate_results collected. Unattended; no questions."
+          "action": "Unattended; do not ask questions. Release aborted at pre-flight/tally gate. Write pretty JSON to `release-abort-<today>.json` in cwd (<today>=today YYYY-MM-DD) capturing abort reason, release_id and target_environment from manifest if available, and any gate_results collected so far."
         }
       }
     },
