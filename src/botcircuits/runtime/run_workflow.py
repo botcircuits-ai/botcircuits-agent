@@ -368,6 +368,8 @@ async def _run(
     finally:
         await provider.aclose()
 
+    usage_dict = result.usage.to_dict() if result.usage else None
+
     if result.paused:
         _save_state(name, {
             "engine_paused_step": result.paused_step or resume_step,
@@ -381,9 +383,14 @@ async def _run(
         if trace:
             trace.event(
                 "paused", slots=result.slots,
-                data={"question": result.question},
+                data={"question": result.question, "usage": usage_dict},
             )
-        return {"status": "paused", "question": result.question, "name": name}
+        out: dict[str, Any] = {
+            "status": "paused", "question": result.question, "name": name,
+        }
+        if usage_dict:
+            out["usage"] = usage_dict
+        return out
 
     _clear_state(name)
     clean_slots = {
@@ -393,7 +400,14 @@ async def _run(
     if trace:
         _record_memory_graph(trace, flow, result.slots)
         trace.end(status="done", summary=result.summary, slots=result.slots)
-    return {"status": "done", "summary": result.summary, "slots": clean_slots}
+        try:
+            trace.event("usage", data=usage_dict or {})
+        except Exception:  # pragma: no cover - tracing must not break a run
+            pass
+    out = {"status": "done", "summary": result.summary, "slots": clean_slots}
+    if usage_dict:
+        out["usage"] = usage_dict
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

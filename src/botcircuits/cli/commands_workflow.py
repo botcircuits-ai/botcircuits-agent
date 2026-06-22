@@ -362,16 +362,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return _fail(f"{type(e).__name__}: {e}", 1)
 
     # Map the engine's internal result to the caller-facing outcome contract.
+    # `usage` (real per-step + total tokens the run billed) rides along when the
+    # runtime reported any; absent for runtimes that don't surface usage.
     status = result.get("status")
+    usage = result.get("usage")
     if status == "paused":
-        print(json.dumps(
-            {"status": "paused", "question": result.get("question") or ""},
-            ensure_ascii=False))
+        out_obj = {"status": "paused", "question": result.get("question") or ""}
+        if usage:
+            out_obj["usage"] = usage
+        print(json.dumps(out_obj, ensure_ascii=False))
         return 0
     if status == "done":
-        print(json.dumps(
-            {"status": "success", "message": result.get("summary") or ""},
-            ensure_ascii=False))
+        out_obj = {"status": "success", "message": result.get("summary") or ""}
+        if usage:
+            out_obj["usage"] = usage
+        print(json.dumps(out_obj, ensure_ascii=False))
         return 0
     # `error` or anything unexpected → terminal failure.
     return _fail(result.get("error") or "workflow run failed", 1)
@@ -636,6 +641,26 @@ def _cmd_build(args: argparse.Namespace) -> int:
         f"expressions: {summary['expressions']}  |  "
         f"variables: {summary['variables']}"
     ))
+
+    # Static token footprint of the workflow DEFINITION — how many tokens the
+    # raw source and the built artifact occupy (their context cost), counted
+    # with the tokenizer for the provider that built it. A size estimate, not
+    # tokens the build's LLM calls billed. Best-effort; never fails the build.
+    try:
+        from botcircuits.usage.token_counter import token_footprint
+        raw_record = _load_json(source_path)
+        fp = token_footprint(
+            raw=raw_record, built=record,
+            provider=getattr(provider, "name", None),
+        )
+        out(C.dim(
+            f"  token footprint [{fp['provider']}]: "
+            f"raw {fp['raw_tokens']}  |  built {fp['built_tokens']}  |  "
+            f"total {fp['total_tokens']}"
+        ))
+    except Exception:
+        pass
+
     out(C.dim(f"(source: {source_path})"))
     out(C.dim(f"(built:  {build_path})"))
     return 0

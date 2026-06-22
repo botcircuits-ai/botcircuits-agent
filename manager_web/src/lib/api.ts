@@ -33,6 +33,32 @@ export type TraceEvent = {
   data: Record<string, unknown>;
 };
 
+/** Real token usage one action step billed (carried on `action_after`
+ * events under `data.output.usage`, and aggregated on the final `usage`
+ * event). Present only when the runtime reports usage. */
+export type ActionUsage = {
+  step?: string;
+  runtime?: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  calls: number;
+  total_tokens: number;
+};
+
+/** Run-level token usage: the session total plus a per-action-step list.
+ * Emitted as the `usage` trace event's `data`. */
+export type RunUsage = {
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  calls: number;
+  steps: ActionUsage[];
+};
+
 export type MemoryNode = {
   id: string;
   kind: string;

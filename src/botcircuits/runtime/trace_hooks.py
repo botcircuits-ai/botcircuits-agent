@@ -23,7 +23,7 @@ from botcircuits.agent.workflow.engine.runner import SegmentResult
 
 def _segment_output(seg: SegmentResult) -> dict[str, Any]:
     """A serializable view of what the sub-agent returned for a segment."""
-    return {
+    out: dict[str, Any] = {
         "text": seg.text,
         "captured_slots": dict(seg.captured_slots or {}),
         "captured_items": list(seg.captured_items or []),
@@ -34,6 +34,14 @@ def _segment_output(seg: SegmentResult) -> dict[str, Any]:
         # not just the question text.
         "needs_tool": list(seg.needs_tool or []),
     }
+    # Real token usage this segment billed, when the runtime reported it.
+    # Recorded on the action event so the trace UI can overlay per-step tokens
+    # (the same way it overlays per-step duration). Absent when the runtime
+    # reports nothing.
+    usage = getattr(seg, "usage", None)
+    if usage is not None:
+        out["usage"] = usage.to_dict()
+    return out
 
 
 class _TracingProvider(AgentRuntimeProvider):

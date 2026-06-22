@@ -391,6 +391,25 @@ def build_workflow_tool(
             except Exception as e:
                 refresh_error = f"{type(e).__name__}: {e}"
 
+        # Static token footprint: how many tokens the workflow DEFINITION
+        # occupies (its raw JSON source and, when built, the runnable
+        # artifact). This is a size/context-cost estimate, NOT tokens billed
+        # by the indexer's LLM calls. Counted with the tokenizer for the
+        # provider that authored it so the number matches whoever will read it
+        # at runtime (Claude under claude-code, GPT under codex, heuristic
+        # otherwise). Best-effort — a counting hiccup never fails the write.
+        token_usage: dict[str, Any] | None = None
+        try:
+            from botcircuits.usage.token_counter import token_footprint
+
+            token_usage = token_footprint(
+                raw=raw_record,
+                built=built_record if built_written else None,
+                provider=getattr(provider, "name", None),
+            )
+        except Exception:
+            token_usage = None
+
         result: dict[str, Any] = {
             "ok": True,
             "workflow_name": raw_record["name"],
@@ -403,6 +422,8 @@ def build_workflow_tool(
                 f"{'created' if not existed else 'updated'} at {source_path}."
             ),
         }
+        if token_usage is not None:
+            result["token_usage"] = token_usage
         if refresh_error:
             result["refresh_error"] = (
                 f"Workflow tool registry refresh failed: {refresh_error}. "

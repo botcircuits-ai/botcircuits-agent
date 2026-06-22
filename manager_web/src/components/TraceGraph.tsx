@@ -16,8 +16,8 @@ import ReactFlow, {
   type NodeProps,
 } from "reactflow";
 import "reactflow/dist/style.css";
-import type { SessionDoc, TraceEvent } from "@/lib/api";
-import { fmtDuration } from "@/lib/format";
+import type { ActionUsage, RunUsage, SessionDoc, TraceEvent } from "@/lib/api";
+import { fmtDuration, fmtTokens } from "@/lib/format";
 
 /**
  * Workflow trace graph.
@@ -33,6 +33,8 @@ type StepNodeData = {
   label: string;
   kind?: string;
   durationMs: number | null;
+  /** Real tokens this step billed, when the runtime reported usage. */
+  usage?: ActionUsage | null;
   visited: boolean;
   selected: boolean;
   edgeHighlighted?: boolean;
@@ -86,9 +88,26 @@ function StepNode({ data }: NodeProps<StepNodeData>) {
       >
         {data.label}
       </div>
-      {data.durationMs != null && (
-        <div className="text-[11px] text-muted mt-0.5">
-          {fmtDuration(data.durationMs)}
+      {(data.durationMs != null || data.usage) && (
+        <div className="flex items-center gap-2 mt-0.5">
+          {data.durationMs != null && (
+            <span className="text-[11px] text-muted">{fmtDuration(data.durationMs)}</span>
+          )}
+          {data.usage && (
+            <span
+              className="text-[10px] font-medium text-brand bg-brand/10 rounded px-1 py-px tabular-nums"
+              title={
+                `${data.usage.total_tokens} tokens` +
+                ` (in ${data.usage.input_tokens} / out ${data.usage.output_tokens}` +
+                (data.usage.cache_read_tokens
+                  ? ` / cache ${data.usage.cache_read_tokens}`
+                  : "") +
+                `)`
+              }
+            >
+              {fmtTokens(data.usage.total_tokens)} tok
+            </span>
+          )}
         </div>
       )}
       <Handle type="source" position={Position.Bottom} className="!bg-muted" />
@@ -158,6 +177,7 @@ export function TraceGraph({
   const [showMemory, setShowMemory] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const slotCount = (doc.memory?.nodes ?? []).filter((n) => n.kind === "slot").length;
+  const runUsage = useMemo(() => runUsageOf(doc), [doc]);
 
   const { nodes: baseNodes, edges, hasGraph } = useMemo(
     // "Only path taken" collapses to the steps that ran; "View memory" overlays
@@ -253,6 +273,28 @@ export function TraceGraph({
         )}
       </div>
 
+      {/* run token-usage summary */}
+      {runUsage && runUsage.total_tokens > 0 && (
+        <div
+          className="absolute top-2 right-2 z-10 text-[11px] rounded-md px-2 py-1 border bg-surface/90 border-brand/40 text-fg flex items-center gap-1.5 tabular-nums"
+          title={
+            `Total run tokens: ${runUsage.total_tokens}\n` +
+            `input ${runUsage.input_tokens} · output ${runUsage.output_tokens}` +
+            (runUsage.cache_read_tokens
+              ? ` · cache read ${runUsage.cache_read_tokens}`
+              : "") +
+            `\nLLM calls: ${runUsage.calls}`
+          }
+        >
+          <span className="text-brand font-semibold">
+            {fmtTokens(runUsage.total_tokens)}
+          </span>
+          <span className="text-muted">tokens</span>
+          <span className="text-muted/60">·</span>
+          <span className="text-muted">{runUsage.calls} call{runUsage.calls === 1 ? "" : "s"}</span>
+        </div>
+      )}
+
       <ReactFlow
         nodes={displayNodes}
         edges={displayEdges}
@@ -317,6 +359,52 @@ function Toggle({
   );
 }
 
+/** Sum two ActionUsage records (per-step accumulation across action calls). */
+function mergeUsage(a: ActionUsage | undefined, b: ActionUsage): ActionUsage {
+  if (!a) return { ...b };
+  return {
+    step: a.step || b.step,
+    runtime: a.runtime || b.runtime,
+    input_tokens: a.input_tokens + b.input_tokens,
+    output_tokens: a.output_tokens + b.output_tokens,
+    cache_read_tokens: a.cache_read_tokens + b.cache_read_tokens,
+    cache_write_tokens: a.cache_write_tokens + b.cache_write_tokens,
+    calls: a.calls + b.calls,
+    total_tokens: a.total_tokens + b.total_tokens,
+  };
+}
+
+/** The run's token total. Prefers the authoritative `usage` trace event the
+ * engine emits; falls back to summing per-step action usage for older traces. */
+function runUsageOf(doc: SessionDoc): RunUsage | null {
+  for (let i = doc.trace.length - 1; i >= 0; i--) {
+    const ev = doc.trace[i];
+    if (ev.type === "usage" && ev.data && typeof ev.data === "object") {
+      const d = ev.data as any;
+      if (typeof d.total_tokens === "number") return d as RunUsage;
+    }
+  }
+  // Fallback: aggregate from action_after usage payloads.
+  let total: RunUsage | null = null;
+  for (const ev of doc.trace) {
+    if (ev.type !== "action_after") continue;
+    const u = (ev.data as any)?.output?.usage as ActionUsage | undefined;
+    if (!u) continue;
+    total = total ?? {
+      total_tokens: 0, input_tokens: 0, output_tokens: 0,
+      cache_read_tokens: 0, cache_write_tokens: 0, calls: 0, steps: [],
+    };
+    total.total_tokens += u.total_tokens;
+    total.input_tokens += u.input_tokens;
+    total.output_tokens += u.output_tokens;
+    total.cache_read_tokens += u.cache_read_tokens;
+    total.cache_write_tokens += u.cache_write_tokens;
+    total.calls += u.calls;
+    total.steps.push(u);
+  }
+  return total;
+}
+
 function buildGraph(
   doc: SessionDoc,
   selectedStep: string | null,
@@ -364,17 +452,24 @@ function buildGraph(
       takenNextByStep.set(ev.step, ((ev.data as any)?.chosen_next ?? null) as string | null);
     }
   }
-  // Per-step duration: attribute action_after durations to the most recent
-  // step_enter (action events don't always carry a step id).
+  // Per-step duration AND per-step token usage: attribute action_after data to
+  // the most recent step_enter (action events don't always carry a step id).
+  // Usage rides on `data.output.usage` (see runtime.trace_hooks); summed per
+  // step so a step driven by several action calls shows its combined cost.
   const durByStep = new Map<string, number>();
+  const usageByStep = new Map<string, ActionUsage>();
   {
     let current: string | null = null;
     for (const ev of doc.trace) {
       if (ev.type === "step_enter" && ev.step) current = ev.step;
-      if (ev.type === "action_after" && ev.duration_ms != null) {
-        const k = ev.step ?? current;
-        if (k) durByStep.set(k, (durByStep.get(k) ?? 0) + ev.duration_ms);
+      if (ev.type !== "action_after") continue;
+      const k = ev.step ?? current;
+      if (!k) continue;
+      if (ev.duration_ms != null) {
+        durByStep.set(k, (durByStep.get(k) ?? 0) + ev.duration_ms);
       }
+      const u = (ev.data as any)?.output?.usage as ActionUsage | undefined;
+      if (u) usageByStep.set(k, mergeUsage(usageByStep.get(k), u));
     }
   }
 
@@ -394,6 +489,7 @@ function buildGraph(
         label: id,
         kind: s?.type,
         durationMs: durByStep.get(id) ?? null,
+        usage: usageByStep.get(id) ?? null,
         visited: visited.has(id),
         selected: selectedStep === id,
       },

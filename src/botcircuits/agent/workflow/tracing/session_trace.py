@@ -63,6 +63,7 @@ class EventType:
     ACTION_AFTER = "action_after"
     SLOT_RESOLVE = "slot_resolve"
     BRANCH = "branch"
+    USAGE = "usage"
     SESSION_END = "session_end"
 
 

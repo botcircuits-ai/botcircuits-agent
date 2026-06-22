@@ -31,6 +31,7 @@ from botcircuits.runtime.result import (
     normalized_slots_from_stdout,
     segment_result_from_stdout,
 )
+from botcircuits.usage.run_usage import usage_from_stdout
 from botcircuits.agent.workflow.engine.runner import SegmentResult
 from botcircuits.agent.workflow.engine.segment_exec import (
     ENGINE_SYSTEM_PROMPT,
@@ -205,7 +206,14 @@ class ClaudeCodeRuntime(AgentRuntimeProvider):
                 file=sys.stderr,
             )
 
-        return segment_result_from_stdout(res.stdout)
+        result = segment_result_from_stdout(res.stdout)
+        # Attach the real token usage this segment billed, when the host CLI
+        # reports it on stdout (claude-code's `--output-format json` /
+        # codex/openclaw's `--json` carry a `usage` block). The engine folds
+        # this into the run's per-action-step token breakdown. None when the
+        # runtime reports nothing — the run simply shows no usage for it.
+        result.usage = usage_from_stdout(res.stdout, runtime=self.name)
+        return result
 
     # -- slot resolution ----------------------------------------------------
 

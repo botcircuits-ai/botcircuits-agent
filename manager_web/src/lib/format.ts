@@ -20,6 +20,14 @@ export function fmtDuration(ms: number | null | undefined): string {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
+/** Compact token count: 1234 → "1.2k", 1_200_000 → "1.2M". */
+export function fmtTokens(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 /** Tailwind classes for a session/event status badge. */
 export function statusClasses(status: string): string {
   switch (status) {
@@ -48,6 +56,7 @@ export function eventLabel(type: string): string {
       action_after: "Action ▸ done",
       slot_resolve: "Memory resolve",
       branch: "Branch",
+      usage: "Token usage",
       paused: "Paused",
       session_end: "Session end",
     }[type] ?? type

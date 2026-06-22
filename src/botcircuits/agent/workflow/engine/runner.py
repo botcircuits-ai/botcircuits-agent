@@ -29,10 +29,13 @@ agent's existing tools / skills / MCP wiring.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 from uuid import uuid4
 
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from botcircuits.usage.run_usage import ActionUsage, RunUsage
 
 from botcircuits.agent.workflow.engine.handlers.choice import evaluate_choices
 from botcircuits.agent.workflow.engine.item_resolver import resolve_item_facts
@@ -77,6 +80,11 @@ class SegmentResult:
     #: S3 — for a `listDecision` segment, the per-item fact-sets the model
     #: reported via `record_item_list`. The engine decides each deterministically.
     captured_items: list[dict] = field(default_factory=list)
+    #: Real token usage this segment's LLM call(s) billed, when the runtime
+    #: reports it (native providers always; CLI runtimes that emit a `usage`
+    #: block on stdout). ``None`` when the runtime reports no usage. Carried so
+    #: the run can publish a per-action-step token breakdown plus a total.
+    usage: "ActionUsage | None" = None
 
 
 @dataclass
@@ -95,6 +103,11 @@ class EngineResult:
     slots: dict[str, Any] = field(default_factory=dict)
     #: Per-branch audit records (§6).
     decisions: list[dict] = field(default_factory=list)
+    #: Real token usage for the run: per-action-step breakdown + session
+    #: total. Populated from each segment's `SegmentResult.usage` (native
+    #: providers and CLI runtimes that report it); empty when no runtime in
+    #: the run reported any usage.
+    usage: "RunUsage | None" = None
 
 
 class SegmentRunner(Protocol):
@@ -326,6 +339,21 @@ async def run_workflow_engine(
     slots = dict(slots or {})
     decisions: list[dict] = []
 
+    # Real token usage for this run: per-action-step + total. Each segment's
+    # `run_segment` may attach `SegmentResult.usage` (native providers always;
+    # CLI runtimes that report a `usage` block on stdout); we stamp it with the
+    # segment head step id and fold it in here. `_account` is a no-op for
+    # segments that did no LLM work or whose runtime reports nothing.
+    from botcircuits.usage.run_usage import RunUsage
+
+    run_usage = RunUsage()
+
+    def _account(seg: "SegmentResult", step_id: str | None) -> None:
+        u = getattr(seg, "usage", None)
+        if u is not None and not u.step:
+            u.step = step_id or ""
+        run_usage.add(u)
+
     # S4 — resolve every `flow.variables` entry that carries a deterministic
     # `resolver` up front, in code. This fills standalone values the result
     # template / later steps need (e.g. customer_id) without an LLM call, in
@@ -355,6 +383,7 @@ async def run_workflow_engine(
                         f"{_MAX_SEGMENTS} segments (branch cycle?)",
                 slots=slots,
                 decisions=decisions,
+                usage=run_usage,
             )
 
         branch_step_id = current.get("branchStep")
@@ -454,12 +483,13 @@ async def run_workflow_engine(
                 slots=slots,
                 item_variables=item_vars,
             )
+            _account(seg, current.get("id"))
             if seg.paused:
                 return EngineResult(
                     paused=True, question=seg.question,
                     paused_step=current.get("id"), slots=slots,
                     needs_tool=list(seg.needs_tool),
-                    decisions=decisions,
+                    decisions=decisions, usage=run_usage,
                 )
             decided = _decide_list(
                 workflow_name, branch_step, seg.captured_items,
@@ -487,6 +517,7 @@ async def run_workflow_engine(
             slots=slots,
             **seg_kwargs,
         )
+        _account(seg, current.get("id"))
         last_text = seg.text or last_text
 
         # User-interaction pause: yield control so the user can reply. The
@@ -499,6 +530,7 @@ async def run_workflow_engine(
                 needs_tool=list(seg.needs_tool),
                 slots=slots,
                 decisions=decisions,
+                usage=run_usage,
             )
 
         # Tier-1 capture: fold the reported branch slots into context.
@@ -550,6 +582,7 @@ async def run_workflow_engine(
                 paused_step=current.get("id"),
                 slots=slots,
                 decisions=decisions,
+                usage=run_usage,
             )
 
         # Evaluate deterministically against current slots.
@@ -592,6 +625,7 @@ async def run_workflow_engine(
         summary = _summary_line(workflow_name, last_text, slots)
     return EngineResult(
         done=True, summary=summary, slots=slots, decisions=decisions,
+        usage=run_usage,
     )
 
 

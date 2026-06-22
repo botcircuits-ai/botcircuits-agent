@@ -52,7 +52,12 @@ class NativeRuntime(AgentRuntimeProvider):
         data_variables: list[dict] | None = None,
         event_sink: EventSink | None = None,
     ) -> SegmentResult:
-        return await self._agent._run_segment(
+        # Snapshot the provider's cumulative usage before the segment so we can
+        # attribute exactly the tokens THIS segment billed (the agent loop's
+        # `record_usage` only tracks a session total). The delta becomes the
+        # SegmentResult's per-step usage the engine folds into the run total.
+        before = self._usage_snapshot()
+        seg = await self._agent._run_segment(
             actions=actions,
             branch_variables=branch_variables,
             system_notes=system_notes,
@@ -60,6 +65,38 @@ class NativeRuntime(AgentRuntimeProvider):
             item_variables=item_variables,
             data_variables=data_variables,
             event_sink=event_sink,
+        )
+        seg.usage = self._usage_delta(before)
+        return seg
+
+    def _usage_snapshot(self) -> dict[str, int]:
+        """Current cumulative token counters on the agent's provider, or zeros
+        when there is no provider / it doesn't track usage."""
+        p = getattr(self._agent, "provider", None)
+        return {
+            "input": int(getattr(p, "usage_input_tokens", 0) or 0),
+            "output": int(getattr(p, "usage_output_tokens", 0) or 0),
+            "cache_read": int(getattr(p, "usage_cache_read_tokens", 0) or 0),
+            "cache_write": int(getattr(p, "usage_cache_write_tokens", 0) or 0),
+            "calls": int(getattr(p, "usage_llm_calls", 0) or 0),
+        }
+
+    def _usage_delta(self, before: dict[str, int]):
+        """ActionUsage for the tokens billed since `before`, or None when the
+        segment made no LLM call (e.g. a deterministic systemAction)."""
+        from botcircuits.usage.run_usage import ActionUsage
+
+        now = self._usage_snapshot()
+        d = {k: max(0, now[k] - before[k]) for k in now}
+        if not (d["input"] or d["output"] or d["calls"]):
+            return None
+        return ActionUsage(
+            runtime=self.name,
+            input_tokens=d["input"],
+            output_tokens=d["output"],
+            cache_read_tokens=d["cache_read"],
+            cache_write_tokens=d["cache_write"],
+            calls=d["calls"],
         )
 
     async def resolve_slots(

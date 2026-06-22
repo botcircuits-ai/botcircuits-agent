@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { TraceEvent } from "@/lib/api";
-import { cx, eventDotColor, eventLabel, fmtDuration } from "@/lib/format";
+import { cx, eventDotColor, eventLabel, fmtDuration, fmtTokens } from "@/lib/format";
 
 /**
  * Vertical event timeline, grouped by step.
@@ -107,6 +107,13 @@ function StepBlock({
   const totalMs = group.children
     .filter((c) => c.type === "action_after")
     .reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
+  // Sum the real tokens this step's action call(s) billed, when reported.
+  const stepTokens = group.children
+    .filter((c) => c.type === "action_after")
+    .reduce(
+      (sum, c) => sum + (((c.data as any)?.output?.usage?.total_tokens as number) ?? 0),
+      0,
+    );
 
   return (
     <li className="relative pl-8 pb-4">
@@ -133,6 +140,11 @@ function StepBlock({
           {totalMs > 0 && (
             <span className="text-xs text-brand-700 dark:text-brand-300">
               {fmtDuration(totalMs)}
+            </span>
+          )}
+          {stepTokens > 0 && (
+            <span className="text-[10px] font-medium text-brand bg-brand/10 rounded px-1 py-px tabular-nums">
+              {fmtTokens(stepTokens)} tok
             </span>
           )}
           <span className="ml-auto text-xs text-muted tabular-nums">
@@ -277,6 +289,21 @@ function EventData({ ev }: { ev: TraceEvent }) {
               </div>
             )}
         </Section>
+        {out.usage && (
+          <Section title="Token usage">
+            <div className="flex flex-wrap gap-2 text-xs text-fg tabular-nums">
+              <UsageStat label="total" value={out.usage.total_tokens} strong />
+              <UsageStat label="input" value={out.usage.input_tokens} />
+              <UsageStat label="output" value={out.usage.output_tokens} />
+              {out.usage.cache_read_tokens > 0 && (
+                <UsageStat label="cache read" value={out.usage.cache_read_tokens} />
+              )}
+              {out.usage.cache_write_tokens > 0 && (
+                <UsageStat label="cache write" value={out.usage.cache_write_tokens} />
+              )}
+            </div>
+          </Section>
+        )}
       </>
     );
   }
@@ -323,6 +350,28 @@ function Section({
       </div>
       {children}
     </div>
+  );
+}
+
+function UsageStat({
+  label,
+  value,
+  strong,
+}: {
+  label: string;
+  value: number;
+  strong?: boolean;
+}) {
+  return (
+    <span
+      className={cx(
+        "rounded px-1.5 py-px",
+        strong ? "bg-brand/15 text-brand font-semibold" : "bg-elevated text-muted",
+      )}
+    >
+      {fmtTokens(value)}
+      <span className="ml-1 text-[10px] uppercase tracking-wide opacity-70">{label}</span>
+    </span>
   );
 }
 
