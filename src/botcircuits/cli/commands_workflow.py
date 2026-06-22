@@ -535,6 +535,24 @@ def _cmd_build(args: argparse.Namespace) -> int:
         ))
         return 2
 
+    # Static lint (pure, no LLM) before compiling. Surfaces the authoring traps
+    # that otherwise compile silently — OR-conditions that drop branches, a
+    # listDecision decision word that's actually a step name, a missing
+    # itemSource file — so the author fixes them from the build output instead of
+    # diving into the framework source. Warnings only: the build still proceeds.
+    try:
+        from pathlib import Path as _Path
+        from botcircuits.agent.workflow.workflow_validator import static_issues
+        # itemSource / resolver paths are relative to the run cwd (the workspace),
+        # which is where the workflow is later run from.
+        lint = static_issues(record, base_dir=_Path.cwd())
+    except Exception:
+        lint = []
+    if lint:
+        out(C.yellow(f"[workflow] {len(lint)} lint warning(s):"))
+        for msg in lint:
+            out(C.yellow(f"  - {msg}"))
+
     provider, label = _make_build_provider(cfg)
     out(C.dim(f"building {workflow_name!r} using {label}"))
 

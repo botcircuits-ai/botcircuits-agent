@@ -105,6 +105,30 @@ def test_malformed_is_comparison_flagged(tmp_path):
                for i in static_issues(doc, base_dir=tmp_path))
 
 
+def test_or_condition_flagged(tmp_path):
+    """A condition joining alternatives with 'or' compiles to a single branch
+    and silently drops the rest — flag it so the author splits it."""
+    _ws(tmp_path)
+    doc = _good(tmp_path)
+    doc["flow"]["steps"]["process"]["conditions"] = [
+        {"condition": "status is exception or returned or lost", "next": "escalate"},
+    ]
+    issues = static_issues(doc, base_dir=tmp_path)
+    assert any("'or'" in i and "drops" in i for i in issues)
+
+
+def test_split_conditions_not_flagged(tmp_path):
+    """The correct split form (one alternative per entry) raises no OR warning."""
+    _ws(tmp_path)
+    doc = _good(tmp_path)
+    doc["flow"]["steps"]["process"]["conditions"] = [
+        {"condition": "status is exception", "next": "escalate"},
+        {"condition": "status is returned", "next": "escalate"},
+        {"condition": "status is lost", "next": "escalate"},
+    ]
+    assert not any("drops" in i for i in static_issues(doc, base_dir=tmp_path))
+
+
 def test_no_basedir_skips_file_checks(tmp_path):
     # Without base_dir, path-existence checks are skipped (no false positives).
     doc = _good(tmp_path)

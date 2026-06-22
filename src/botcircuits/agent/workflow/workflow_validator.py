@@ -233,9 +233,23 @@ def static_issues(doc: dict, *, base_dir: Path | None = None) -> list[str]:
                             "branch as a natural-language `condition` and let "
                             "the builder compile it.")
 
-        # Conditions must reference declared variables.
+        # OR-conditions silently drop branches. A natural-language condition that
+        # joins alternatives with " or " (e.g. "status is exception or returned or
+        # lost") compiles to a SINGLE comparison — only the first alternative
+        # matches and the rest vanish with no error, so items that should have hit
+        # the branch fall through to the default. Flag it so the author splits it
+        # into one entry per alternative, each pointing at the same `next`. (" and "
+        # compiles to a real conjunction, so it isn't flagged.)
         for c in step.get("conditions") or []:
-            pass  # NL conditions are compiled later; can't bind names yet
+            if not isinstance(c, dict):
+                continue
+            text = c.get("condition")
+            if isinstance(text, str) and " or " in text.lower():
+                issues.append(
+                    f"Step '{sid}': condition \"{text}\" joins alternatives with "
+                    "'or' — it compiles to a SINGLE branch and silently drops the "
+                    "rest. Split it into one condition per alternative, each with "
+                    f"the same `next` ('{c.get('next')}').")
 
         # resolver file existence
         # (variables carry resolvers; check their files)
