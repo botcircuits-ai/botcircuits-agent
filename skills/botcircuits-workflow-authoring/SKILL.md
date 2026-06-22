@@ -19,10 +19,42 @@ this session.
 > files — e.g. an `itemSource` file — to validate references, just not the
 > framework internals.)
 
+## The user speaks business, you supply the mechanics
+
+Assume the user describes **only high-level business logic** — "check every
+parcel and flag the late ones", "screen each applicant", "for each line item,
+charge it or back-order it". They do NOT know the step types, `listDecision`,
+`itemFacts`, condition ordering, or the self-loop pitfall, and you must NOT make
+them. **It is your job to infer the technical wiring from their words.** Never
+ask the user "should this be a `listDecision`?" or "exec or LLM facts?" — those
+are your decisions to derive. Use this table to translate intent → wiring:
+
+| Business-language cue | What it means technically |
+| --- | --- |
+| "for every / each item", "all the parcels", "go through the list", same decision repeated over a collection | A single **`listDecision`** step — NOT a `next_item → do_thing → record → loop` self-loop (see below). |
+| "read a list / file of X", "one per line", "the orders in this file" | The list is the `itemSource` `{file, path}`. Plain one-per-line text → `path: ""`. |
+| "look it up", "query the API", "fetch its status", "check the record" — a deterministic per-item lookup | Gather facts with **`itemFacts` (kind `exec`)** so the ENGINE does it per item with no LLM call. Only fall back to model-reported facts when no script/endpoint exists. |
+| "check failures / errors / invalid first", "if it errors, stop checking" | Put failure/error/not-found `conditions` **first** — first match wins, top-to-bottom. |
+| "status is A or B or C → same outcome" | Write **separate** condition entries (one comparison each) all pointing at the same decision word — never an OR-condition. |
+| "otherwise", "by default", "anything else" | The `defaultNext` decision word (for `listDecision`) or the step's own `next` (for a normal branching step). |
+| "ask the user", "confirm with them", "prompt for X" | A **`question`** step. |
+| "unattended", "batch run", "never ask anyone" | NO `question` steps anywhere. |
+| "the facts I decide on" (in_stock, is_overdue, risk_band) | The `itemVariables` the conditions test. |
+| "collect the results", "write them all out", "one record per item" | `collectInto` (the result list) + `decisionKey` (the per-record outcome field). |
+
+The worked `listDecision` example below corresponds exactly to a request like
+_"check the live status of many parcels from a file and write one results file"_
+— the user never says "listDecision"; you recognize the **list + per-item
+decision + deterministic lookup** shape and reach for it. If a request has NONE
+of these cues (a fixed linear or branching process), use ordinary
+`agentAction` / `question` / `systemAction` steps instead.
+
 ## Steps
 
-1. **Clarify if needed.** If scope, inputs, or branching is ambiguous, ask ONE
-   focused round of questions first. Otherwise proceed.
+1. **Clarify if needed.** Ask ONE focused round of questions ONLY about
+   *business* ambiguity — what the outcomes are, where the data lives, whether a
+   bad item should stop the batch — never about technical wiring (step types,
+   fact-gathering mechanism). If the business logic is clear, proceed.
 
 2. **Write the workflow JSON** to `.botcircuits/workflows/<name>.json` (the
    human-editable source of truth). Pick a slug-safe `name`

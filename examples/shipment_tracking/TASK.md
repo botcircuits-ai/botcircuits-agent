@@ -55,23 +55,3 @@
 > and the 7-day delay threshold easy to change. A single bad tracking number
 > must produce an `error` / `not_found` record for that item — it must never
 > stop the rest of the batch.
-
----
-
-### Notes for whoever runs the prompt
-
-- This is a **list/iteration** workflow: one decision applied to **every item**
-  in a list read from a file. It should compile to a single **`listDecision`**
-  step (engine decides each item deterministically and collects the records),
-  **not** a manual `next_item → fetch → record → next_item` self-loop. The
-  self-loop hands iteration to the model, traces only a couple of items, and is
-  non-deterministic — see the engine/segment design.
-- The per-item carrier lookup is the item's **fact source** (an `itemFacts`
-  exec / item lookup), so the engine gathers each item's `status` etc. with no
-  per-item LLM call. The failure / not-found checks are evaluated first.
-- A sample input file is provided at
-  [tracking-ids.txt](tracking-ids.txt) — its prefixes (e.g. `DLV…`, `DLY…`,
-  `FAIL…`) drive the mock API down each branch. See the README for the full
-  prefix table.
-- After running, expect one decided record per tracking number (10 in the
-  sample) and a per-`outcome` summary in the dated results file.
