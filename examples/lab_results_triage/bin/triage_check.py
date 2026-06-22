@@ -16,8 +16,14 @@ Usage:
 Output JSON fields (all flat; conditions test these):
     order, lookup_failed, not_found,
     not_resulted, critical_value, drug_interaction, no_episode,
-    abnormal, abnormal_flags, worst_flag, panel,
+    abnormal, interaction_review, abnormal_flags, worst_flag, panel,
     needs_attention, note
+
+`interaction_review` is the threshold-aware combined fact the workflow's
+`interaction` branch tests: an abnormal panel (flags at/above the threshold)
+whose ordered follow-up ALSO carries a drug/allergy interaction. The rule
+engine evaluates one variable per branch, so the AND is computed here (where
+the threshold already lives) rather than in the workflow.
 
 This never raises: any connection/HTTP/parse failure becomes
 `lookup_failed: true` so the batch keeps going (that item -> outcome "error").
@@ -87,6 +93,7 @@ def check(host: str, order: str, abnormal_threshold: int) -> dict:
         "drug_interaction": False,
         "no_episode": False,
         "abnormal": False,
+        "interaction_review": False,
         "abnormal_flags": 0,
         "worst_flag": "",
         "panel": "",
@@ -125,6 +132,9 @@ def check(host: str, order: str, abnormal_threshold: int) -> dict:
     facts["drug_interaction"] = bool(data.get("drug_interaction"))
     facts["no_episode"] = not bool(data.get("active_episode"))
     facts["abnormal"] = abnormal_flags >= abnormal_threshold
+    # Threshold-aware AND for the `interaction` outcome (the rule engine tests
+    # one variable per branch, so the conjunction is resolved here).
+    facts["interaction_review"] = bool(facts["abnormal"] and facts["drug_interaction"])
 
     facts["needs_attention"] = bool(
         facts["critical_value"]
@@ -167,6 +177,7 @@ def main(argv: list[str]) -> int:
             "drug_interaction": False,
             "no_episode": False,
             "abnormal": False,
+            "interaction_review": False,
             "abnormal_flags": 0,
             "worst_flag": "",
             "panel": "",
