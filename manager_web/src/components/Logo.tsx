@@ -24,7 +24,7 @@ export function Logo({ compact = false }: { compact?: boolean }) {
       </svg>
       {!compact && (
         <span className="text-fg">
-          BotCircuits <span className="text-muted font-normal">Manager</span>
+          BotCircuits <span className="text-muted font-normal">Argus</span>
         </span>
       )}
     </span>

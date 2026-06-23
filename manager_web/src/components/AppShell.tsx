@@ -137,7 +137,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {!collapsed && (
           <div className="p-3 border-t border-border">
             <div className="px-1 text-xs text-muted">
-              BotCircuits Manager · v0.1
+              BotCircuits Argus · v0.1
             </div>
           </div>
         )}
